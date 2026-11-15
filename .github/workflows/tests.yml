@@ -8,11 +8,14 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Generate protobuf code
@@ -31,6 +34,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Generate protobuf code
         run: python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. mapreduce/mapreduce.proto
+      - name: Build and start the cluster
+        run: docker compose up -d --build
       - name: Run the end-to-end tests on the Docker Compose cluster
         run: python -m pytest -q -m docker
       - name: Show container logs

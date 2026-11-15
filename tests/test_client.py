@@ -211,3 +211,22 @@ def test_upload_that_cannot_be_copied(shared_root, tmp_path, capsys):
     assert main(["--shared", str(shared_root), "upload", str(local), "input/data"]) == 1
 
     assert_one_line_error(capsys.readouterr(), "cannot copy")
+
+
+def test_upload_of_a_directory_that_contains_shared_storage(shared_root, tmp_path, capsys):
+    (tmp_path / "notes.txt").write_text("hello\n")  # tmp_path also holds the shared directory
+
+    assert main(["--shared", str(shared_root), "upload", str(tmp_path), "input/all"]) == 1
+
+    assert_one_line_error(capsys.readouterr(), "into itself")
+    assert not (shared_root / "input").exists()
+
+
+def test_more_tasks_than_the_system_allows(cluster, shared_root, capsys):
+    write_input(shared_root, TEXTS)
+    args = submit_args()
+    args[args.index("--reduces") + 1] = "10001"
+
+    assert client(cluster, shared_root, *args) == 1
+
+    assert_one_line_error(capsys.readouterr(), "--reduces must be between 1 and 10000")

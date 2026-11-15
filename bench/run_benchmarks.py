@@ -269,6 +269,11 @@ def boss_heartbeat_timeout() -> float:
     return 5.0  # the boss's default
 
 
+def worker_cpu_limit() -> float:
+    """The CPU limit of a worker container, in CPUs."""
+    return int(docker("inspect", "--format", "{{.HostConfig.NanoCpus}}", "mr-worker-1")) / 1e9
+
+
 def write_environment(args, experiments: list) -> None:
     """Record the machine and the settings used. The experiments can be run
     one at a time with different settings, so those are kept per experiment."""
@@ -279,6 +284,8 @@ def write_environment(args, experiments: list) -> None:
         settings[name] = {
             "trials": 1 if name == "timeline" else args.trials,
             "cooldown_seconds": args.cooldown,
+            "heartbeat_timeout_seconds": boss_heartbeat_timeout(),
+            "worker_cpu_limit": worker_cpu_limit(),
         }
     info.update({
         "date": time.strftime("%Y-%m-%d"),
@@ -289,9 +296,10 @@ def write_environment(args, experiments: list) -> None:
         "dataset_mb": args.size_mb,
         "map_tasks": MAPS,
         "reduce_tasks": REDUCES,
-        "heartbeat_timeout_seconds": boss_heartbeat_timeout(),
-        "worker_cpu_limit": int(docker("inspect", "--format", "{{.HostConfig.NanoCpus}}", "mr-worker-1")) / 1e9,
     })
+    # These two used to be recorded once for all experiments.
+    info.pop("heartbeat_timeout_seconds", None)
+    info.pop("worker_cpu_limit", None)
     path.write_text(json.dumps(info, indent=2) + "\n")
 
 

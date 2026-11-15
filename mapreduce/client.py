@@ -23,12 +23,12 @@ from typing import Callable, Optional
 
 import grpc
 
+from mapreduce import MAX_TASKS
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
 from mapreduce.storage import resolve_inside
 
 RPC_TIMEOUT = 10.0  # seconds to wait for the boss to answer one call
-MAX_TASKS = 2**31 - 1  # task counts travel as 32-bit integers
 
 
 class ClientError(Exception):
@@ -53,6 +53,10 @@ def upload(local_path: Path, shared_dir: Path, dest: str) -> Path:
         target = resolve_inside(shared_dir, dest)
     except ValueError as error:
         raise ClientError(str(error))
+    source = local_path.resolve()
+    if source == target or source in target.parents:
+        # Copying would descend into its own copy without end.
+        raise ClientError(f"cannot upload {local_path} into itself: it contains shared storage")
 
     try:
         if local_path.is_dir():

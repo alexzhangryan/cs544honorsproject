@@ -25,6 +25,7 @@ from pathlib import Path
 
 import grpc
 
+from mapreduce import MAX_TASKS
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
 from mapreduce.scheduler import SUCCEEDED, Scheduler
@@ -63,10 +64,9 @@ class BossServicer(pb_grpc.BossServicer):
         Raises ValueError with a one-line message if the request is bad.
         Nothing is created until every check has passed.
         """
-        if request.num_map < 1:
-            raise ValueError("the number of map tasks must be at least 1")
-        if request.num_reduce < 1:
-            raise ValueError("the number of reduce tasks must be at least 1")
+        for kind, count in (("map", request.num_map), ("reduce", request.num_reduce)):
+            if not 1 <= count <= MAX_TASKS:
+                raise ValueError(f"the number of {kind} tasks must be between 1 and {MAX_TASKS}")
 
         resolve_inside(self._shared_root, request.input_path)
         try:
@@ -205,27 +205,63 @@ class _ModuleNames(ast.NodeVisitor):
         if isinstance(node.ctx, ast.Store):
             self.names.add(node.id)
 
+    # Names captured by a match statement are plain strings, not Name nodes.
+
+    def visit_MatchAs(self, node):
+        if node.name:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node):
+        if node.name:
+            self.names.add(node.name)
+
+    def visit_MatchMapping(self, node):
+        if node.rest:
+            self.names.add(node.rest)
+        self.generic_visit(node)
+
+
+# A job file that calls one of these can define names in ways that cannot be
+# seen without running it.
+DYNAMIC_DEFINERS = {"globals", "locals", "vars", "exec", "eval", "setattr", "__import__"}
+
 
 def check_job_source(source: str) -> None:
     """Reject a job file that can be seen to be unusable without running it.
 
     Raises ValueError with a one-line message. The file is not executed here:
-    workers do that, and report anything that only shows up at run time.
+    workers do that, and report anything that only shows up at run time. So
+    whenever this check cannot be sure, it accepts the file.
     """
     try:
         tree = ast.parse(source)
         compile(tree, "job.py", "exec")  # catches more, such as 'return' outside a function
     except SyntaxError as error:
+        if error.lineno is None:
+            raise ValueError(f"the job file is not valid Python source: {error.msg}")
         raise ValueError(f"the job file has a syntax error on line {error.lineno}: {error.msg}")
     except ValueError:
         raise ValueError("the job file is not valid Python source")
+    except RecursionError:
+        raise ValueError("the job file is nested too deeply to compile")
 
     names = _ModuleNames()
-    names.visit(tree)
-    if not names.star_import:  # "from x import *" could define anything
-        for required in ("map_fn", "reduce_fn"):
-            if required not in names.names:
-                raise ValueError(f"the job file does not define {required}")
+    try:
+        names.visit(tree)
+    except RecursionError:
+        return  # too deeply nested to analyse here, but the compiler coped
+    cannot_tell = names.star_import  # "from x import *" could define anything
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Global):
+            names.names.update(node.names)  # a function that assigns module-level names
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            cannot_tell = cannot_tell or node.func.id in DYNAMIC_DEFINERS
+    if cannot_tell:
+        return
+    for required in ("map_fn", "reduce_fn"):
+        if required not in names.names:
+            raise ValueError(f"the job file does not define {required}")
 
 
 def event_writer(shared_root: Path):

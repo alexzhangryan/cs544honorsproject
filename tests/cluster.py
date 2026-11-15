@@ -52,8 +52,11 @@ class Cluster:
         self._channel = grpc.insecure_channel(f"127.0.0.1:{self.port}")
         self.stub = pb_grpc.BossStub(self._channel)
 
-    def start_worker(self, index: int) -> None:
-        """Start worker number `index` as its own process (and process group)."""
+    def start_worker(self, index: int, env: dict = None) -> None:
+        """Start worker number `index` as its own process (and process group).
+
+        `env` adds environment variables for this worker and the tasks it runs.
+        """
         log = open(self.log_dir / f"w{index}.log", "a")
         self._workers[index] = subprocess.Popen(
             [
@@ -64,6 +67,7 @@ class Cluster:
                 "--heartbeat-interval", str(self.heartbeat_interval),
             ],
             cwd=REPO,
+            env={**os.environ, **(env or {})},
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -88,13 +92,16 @@ class Cluster:
     def resume_worker(self, index: int) -> None:
         os.killpg(self._workers[index].pid, signal.SIGCONT)
 
-    def submit(self, job_file, input_path: str, output_path: str, maps: int, reduces: int) -> str:
+    def submit(
+        self, job_file, input_path: str, output_path: str, maps: int, reduces: int, backup_tasks: bool = True
+    ) -> str:
         request = pb.SubmitJobRequest(
             input_path=input_path,
             output_path=output_path,
             job_source=Path(job_file).read_text(),
             num_map=maps,
             num_reduce=reduces,
+            no_backup_tasks=not backup_tasks,
         )
         return self.stub.SubmitJob(request).job_id
 

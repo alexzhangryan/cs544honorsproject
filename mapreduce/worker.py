@@ -4,7 +4,8 @@ Each task runs in a child process. The worker itself only talks to the boss:
 it waits for the child and sends a heartbeat every second while it waits.
 This keeps heartbeats on time no matter how busy the user's code is, and a
 crash in user code is reported as a failed task instead of killing the
-worker.
+worker. It also lets the worker stop a task at once when the boss says its
+result is no longer needed.
 
 Run it with:  python -m mapreduce.worker
 """
@@ -40,6 +41,10 @@ CHANNEL_OPTIONS = [
     ("grpc.min_reconnect_backoff_ms", 500),
     ("grpc.max_reconnect_backoff_ms", 2000),
 ]
+
+
+class TaskCancelled(Exception):
+    """The boss no longer needs the task this worker was running."""
 
 
 class Worker:
@@ -85,9 +90,16 @@ class Worker:
                 continue
 
             name = f"{KIND_NAMES[assignment.kind]} {assignment.task_id} of {assignment.job_id}"
-            log.info("starting %s (attempt %d)", name, assignment.attempt)
+            log.info(
+                "starting %s (attempt %d%s)",
+                name, assignment.attempt, ", a backup copy" if assignment.backup else "",
+            )
             started = time.monotonic()
-            error = self._run(assignment)
+            try:
+                error = self._run(assignment)
+            except TaskCancelled:
+                log.info("stopped %s: its result is no longer needed", name)
+                continue
             if error is None:
                 log.info("finished %s in %.1fs", name, time.monotonic() - started)
             else:
@@ -98,6 +110,7 @@ class Worker:
         """Run one task in a child process, sending heartbeats while it runs.
 
         Returns None if the task succeeded, otherwise the error text.
+        Raises TaskCancelled if the boss said to stop; the child is killed.
         """
         task = {
             "kind": KIND_NAMES[assignment.kind],
@@ -116,7 +129,9 @@ class Worker:
         sender.close()  # only the child holds the sending end now
         try:
             while not receiver.poll(self.heartbeat_interval):
-                self._heartbeat()
+                if self._heartbeat():
+                    process.kill()
+                    raise TaskCancelled()
             try:
                 return receiver.recv()
             except EOFError:
@@ -127,11 +142,15 @@ class Worker:
             process.join()
             receiver.close()
 
-    def _heartbeat(self) -> None:
+    def _heartbeat(self) -> bool:
+        """Tell the boss we are alive. Returns True if it wants the task stopped."""
         try:
-            self._stub.Heartbeat(pb.HeartbeatRequest(worker_id=self.worker_id), timeout=RPC_TIMEOUT)
+            reply = self._stub.Heartbeat(
+                pb.HeartbeatRequest(worker_id=self.worker_id), timeout=RPC_TIMEOUT
+            )
+            return reply.cancel
         except grpc.RpcError:
-            pass  # if this keeps failing, the boss will give our task to someone else
+            return False  # if this keeps failing, the boss will give our task to someone else
 
     def _report(self, assignment, error: Optional[str]) -> None:
         request = pb.ReportTaskRequest(

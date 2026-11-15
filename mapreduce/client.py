@@ -79,6 +79,7 @@ def submit_job(
     maps: int,
     reduces: int,
     reduce_order: str = "largest_first",
+    backup_tasks: bool = True,
 ) -> str:
     """Send a job to the boss and return its id."""
     for option, count in (("--maps", maps), ("--reduces", reduces)):
@@ -97,6 +98,7 @@ def submit_job(
         num_map=maps,
         num_reduce=reduces,
         reduce_order=reduce_order,
+        no_backup_tasks=not backup_tasks,
     )
     return stub.SubmitJob(request, timeout=RPC_TIMEOUT).job_id
 
@@ -128,11 +130,16 @@ def format_size(size: int) -> str:
     return f"{size:.1f} GB"
 
 
-def requeue_note(status) -> str:
-    if status.requeues == 0:
-        return ""
-    tasks = "task" if status.requeues == 1 else "tasks"
-    return f"{status.requeues} {tasks} re-run after a worker failure"
+def scheduling_notes(status) -> str:
+    """Anything unusual the boss had to do for this job, or "" if nothing."""
+    notes = []
+    if status.requeues:
+        tasks = "task" if status.requeues == 1 else "tasks"
+        notes.append(f"{status.requeues} {tasks} re-run after a worker failure")
+    if status.backup_tasks:
+        tasks = "task" if status.backup_tasks == 1 else "tasks"
+        notes.append(f"{status.backup_tasks} backup {tasks} started for slow tasks")
+    return "; ".join(notes)
 
 
 def cmd_upload(args, stub) -> int:
@@ -147,6 +154,7 @@ def cmd_submit(args, stub) -> int:
     job_id = submit_job(
         stub, args.input, args.output, Path(args.job), args.maps, args.reduces,
         reduce_order=args.reduce_order.replace("-", "_"),
+        backup_tasks=not args.no_backup_tasks,
     )
     print(f"submitted {job_id}")
     if args.no_wait:
@@ -168,7 +176,7 @@ def cmd_submit(args, stub) -> int:
         return 130
 
     if status.state == "SUCCEEDED":
-        note = requeue_note(status)
+        note = scheduling_notes(status)
         print(f"SUCCEEDED in {status.elapsed_seconds:.1f}s" + (f" ({note})" if note else ""))
         if status.intermediate_bytes:  # 0 if it could not be measured, or there was none
             print(f"intermediate data: {format_size(status.intermediate_bytes)}")
@@ -182,8 +190,8 @@ def cmd_submit(args, stub) -> int:
 def cmd_status(args, stub) -> int:
     status = stub.GetJobStatus(pb.JobStatusRequest(job_id=args.job_id), timeout=RPC_TIMEOUT)
     print(f"{status.job_id}  {status.state}  {progress_line(status)}")
-    if requeue_note(status):
-        print(requeue_note(status))
+    if scheduling_notes(status):
+        print(scheduling_notes(status))
     if status.intermediate_bytes:
         print(f"intermediate data: {format_size(status.intermediate_bytes)}")
     if status.state == "FAILED":
@@ -242,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit_cmd.add_argument("--reduce-order", choices=["largest-first", "numerical"], default="largest-first",
                             help="hand out reduce tasks with the most input first (the default), "
                                  "or in order of task number")
+    submit_cmd.add_argument("--no-backup-tasks", action="store_true",
+                            help="do not start backup copies of tasks that are running slowly")
     submit_cmd.set_defaults(run=cmd_submit)
 
     status_cmd = commands.add_parser("status", help="show the progress of a job")

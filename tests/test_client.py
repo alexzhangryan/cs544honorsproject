@@ -291,3 +291,31 @@ def test_submit_says_nothing_about_intermediate_data_that_was_not_measured(capsy
     assert cmd_submit(args, Stub()) == 0
 
     assert "intermediate data" not in capsys.readouterr().out
+
+
+def test_submit_options_reach_the_boss(tmp_path):
+    from mapreduce.client import submit_job
+
+    class RecordingStub:
+        def SubmitJob(self, request, timeout=None):
+            self.request = request
+            return type("Reply", (), {"job_id": "job-1"})()
+
+    stub = RecordingStub()
+    job = tmp_path / "job.py"
+    job.write_text("def map_fn(k, v):\n    yield v, 1\ndef reduce_fn(k, vs):\n    yield k, 1\n")
+
+    submit_job(stub, "in", "out", job, 2, 3, reduce_order="numerical", backup_tasks=False)
+
+    assert (stub.request.num_map, stub.request.num_reduce) == (2, 3)
+    assert stub.request.reduce_order == "numerical"
+    assert stub.request.no_backup_tasks is True
+
+
+def test_no_backup_tasks_flag(cluster, shared_root, capsys):
+    write_input(shared_root, TEXTS)
+    cluster.start_workers(2)
+
+    assert client(cluster, shared_root, *submit_args(), "--no-backup-tasks") == 0
+
+    assert "SUCCEEDED" in capsys.readouterr().out

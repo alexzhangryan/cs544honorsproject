@@ -3,6 +3,10 @@
 The cluster fixture uses a 3 second heartbeat timeout (15 heartbeats), so a
 dead worker is noticed quickly but a busy machine does not cause false
 alarms.
+
+These jobs run with backup tasks switched off. With them on, a free worker
+would often duplicate the dead worker's task before the timeout, and the
+re-queue path tested here would not be reached (see test_backup.py).
 """
 
 import os
@@ -36,7 +40,9 @@ def submit_slow_job(cluster, shared_root, tmp_path, maps=6, reduces=2):
     write_input(shared_root, {"input/lines.txt": "\n".join(LINES) + "\n"})
     job_file = tmp_path / "slow.py"
     job_file.write_text(SLOW_JOB)
-    return cluster.submit(job_file, "input", "output/slow", maps=maps, reduces=reduces)
+    return cluster.submit(
+        job_file, "input", "output/slow", maps=maps, reduces=reduces, backup_tasks=False
+    )
 
 
 def test_kill_one_worker_mid_task(cluster, shared_root, tmp_path):

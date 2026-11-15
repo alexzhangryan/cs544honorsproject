@@ -10,6 +10,9 @@ another worker, and the job finishes with exactly the output it would have
 produced otherwise. [Try it](#7-try-the-special-feature-kill-a-worker) in
 step 7.
 
+**More features:** combiners, backup tasks for slow workers, and handing out
+the largest reduce task first. See [step 8](#8-more-features).
+
 - [design.md](design.md): how it works and why
 - [docs/evaluation.md](docs/evaluation.md): performance measurements and plots
 
@@ -162,7 +165,9 @@ python -m mapreduce.client submit \
 | `--job` | local Python file with `map_fn` and `reduce_fn` |
 | `--maps` | number of map tasks |
 | `--reduces` | number of reduce tasks |
-| `--reduce-order` | optional. Reduce tasks with the most input are handed out first, so that the one the job waits for longest starts early. `numerical` hands them out in order of task number instead |
+| `--no-wait` | optional: print the job id and return at once |
+| `--reduce-order` | optional. Reduce tasks with the most input are handed out first, so that the one the job waits for longest starts early. `numerical` hands them out in order of task number instead (see [step 8](#8-more-features)) |
+| `--no-backup-tasks` | optional: see [step 8](#8-more-features) |
 
 The client shows progress until the job finishes:
 
@@ -248,6 +253,44 @@ python -m mapreduce.client submit --input input/bench --output output/no-failure
     --job examples/wordcount.py --maps 16 --reduces 8
 diff <(cat shared/output/with-failure/part-*) <(cat shared/output/no-failure/part-*) && echo identical
 ```
+
+## 8. More features
+
+**Combiners.** A job file can define `combine_fn` to shrink the data that map
+tasks pass to reduce tasks. See
+[Optional: a combiner](#optional-a-combiner) in step 5.
+
+**Largest reduce task first.** When the map phase ends, the boss measures how
+much input each reduce task has and hands out the largest first, so the task
+the job has to wait for longest starts as early as possible. Nothing needs to
+be switched on. `submit --reduce-order numerical` goes back to handing them
+out in order of task number.
+
+**Backup tasks for slow workers.** If a task is running much more slowly than
+its size explains, and a worker has nothing else to do, the boss gives that
+worker a second copy of the task. Whichever copy finishes first completes the
+task and the other is stopped. To try it, slow one worker down and run the
+100 MB job from step 7:
+
+```bash
+docker update --cpus 0.25 mr-worker-3      # this worker now gets a quarter of a CPU
+python -m mapreduce.client submit --input input/bench --output output/slow-worker \
+    --job examples/wordcount.py --maps 16 --reduces 8
+docker update --cpus 1 mr-worker-3         # back to normal
+```
+
+```
+SUCCEEDED in 19.0s (1 backup task started for slow tasks)
+```
+
+The boss's log names the task (`docker compose logs boss`):
+
+```
+boss: job job-...: reduce task 4 is running slowly, so worker worker-2 gets a backup copy
+```
+
+With `--no-backup-tasks` (and a new `--output`) the same job has to wait for
+the slow worker. On the machine used for the evaluation it took 28.6 seconds.
 
 ## Running the tests
 

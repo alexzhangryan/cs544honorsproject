@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 import types
 import zlib
 from itertools import groupby
@@ -157,3 +158,19 @@ def run_task(shared_root: str, task: dict) -> None:
         )
     else:
         raise ValueError(f"unknown task kind: {task['kind']!r}")
+
+
+def child_main(shared_root: str, task: dict, result) -> None:
+    """Entry point of the process a worker starts to run one task.
+
+    Sends None through the `result` pipe if the task succeeded, or the text
+    of the traceback if it raised.
+    """
+    try:
+        run_task(shared_root, task)
+    except BaseException:
+        result.send(traceback.format_exc()[-8000:])
+    else:
+        result.send(None)
+    finally:
+        result.close()

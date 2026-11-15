@@ -184,14 +184,14 @@ About five seconds later the boss declares `worker-3` dead and hands its task
 to another worker. The job still finishes, and the client reports the re-run:
 
 ```
-SUCCEEDED in 26.4s (1 task re-run after a worker failure)
+SUCCEEDED in 23.2s (1 task re-run after a worker failure)
 ```
 
 The boss's log shows what happened (`docker compose logs boss`):
 
 ```
 boss: worker worker-3 has gone silent and is presumed dead
-boss: job job-...: map task 9 was lost with worker worker-3 and is back in the queue
+boss: job job-...: map task 6 was lost with worker worker-3 and is back in the queue
 ```
 
 Bring the worker back; it rejoins by itself:

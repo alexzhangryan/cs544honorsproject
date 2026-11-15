@@ -80,7 +80,8 @@ class _Worker:
     worker_id: str
     last_seen: float
     alive: bool = True
-    task: Optional[tuple[str, str, int]] = None  # (job id, kind, task id) it is running
+    # The task attempt it is running: (job id, kind, task id, attempt).
+    task: Optional[tuple[str, str, int, int]] = None
 
 
 @dataclass
@@ -166,7 +167,7 @@ class Scheduler:
                 task.state = IN_PROGRESS
                 task.worker = worker_id
                 task.attempt += 1
-                worker.task = (job.job_id, task.kind, task.task_id)
+                worker.task = (job.job_id, task.kind, task.task_id, task.attempt)
                 self._event(job, "assigned", task)
                 return Assignment(
                     kind=task.kind,
@@ -199,7 +200,7 @@ class Scheduler:
         """
         with self._lock:
             worker = self._contact(worker_id)
-            if worker.task == (job_id, kind, task_id):
+            if worker.task == (job_id, kind, task_id, attempt):
                 worker.task = None  # whatever the outcome, it is no longer running this
             job = self._jobs.get(job_id)
             if job is None or job.state != RUNNING:
@@ -256,7 +257,7 @@ class Scheduler:
             for worker in sorted(self._workers.values(), key=lambda w: w.worker_id):
                 current = ""
                 if worker.task is not None:
-                    job_id, kind, task_id = worker.task
+                    job_id, kind, task_id, _ = worker.task
                     current = f"{kind} {task_id} of {job_id}"
                 result.append(
                     WorkerStatus(worker.worker_id, worker.alive, current, now - worker.last_seen)
@@ -281,6 +282,11 @@ class Scheduler:
                 requeues=job.requeues,
                 output_path=job.output_path,
             )
+
+    def running_outputs(self) -> list[tuple[str, str]]:
+        """(job id, output path) of every job that is still running."""
+        with self._lock:
+            return [(job.job_id, job.output_path) for job in self._jobs.values() if job.state == RUNNING]
 
     def events(self, job_id: str) -> list[dict]:
         """The job's scheduling log, oldest first."""
@@ -309,11 +315,16 @@ class Scheduler:
         """
         if worker.task is None:
             return
-        job_id, kind, task_id = worker.task
+        job_id, kind, task_id, attempt = worker.task
         worker.task = None
         job = self._jobs[job_id]
         task = job.task(kind, task_id)
-        if job.state != RUNNING or task.state != IN_PROGRESS or task.worker != worker.worker_id:
+        if (
+            job.state != RUNNING
+            or task.state != IN_PROGRESS
+            or task.worker != worker.worker_id
+            or task.attempt != attempt
+        ):
             return  # nothing to recover, for example because the job already failed
 
         self._event(job, "requeued", task)
@@ -356,4 +367,10 @@ class Scheduler:
             event.update(kind=task.kind, task=task.task_id, attempt=task.attempt, worker=task.worker)
         job.events.append(event)
         if self._on_event is not None:
-            self._on_event(job.job_id, event)
+            try:
+                self._on_event(job.job_id, event)
+            except Exception as error:
+                # The hook only keeps a record for people (the boss writes a
+                # log file). Scheduling must carry on if that record cannot
+                # be written, for example because the job's directory is gone.
+                log.error("could not record a %r event for job %s: %s", name, job.job_id, error)

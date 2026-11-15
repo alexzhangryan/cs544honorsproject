@@ -41,12 +41,14 @@ class BossServicer(pb_grpc.BossServicer):
     def __init__(self, scheduler: Scheduler, shared_root: Path):
         self._scheduler = scheduler
         self._shared_root = shared_root
+        self._submit_lock = threading.Lock()  # one submission is checked and queued at a time
 
     # Called by the client.
 
     def SubmitJob(self, request, context):
         try:
-            job_id = self._submit(request)
+            with self._submit_lock:
+                job_id = self._submit(request)
         except ValueError as error:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(error))
         log.info(
@@ -79,6 +81,14 @@ class BossServicer(pb_grpc.BossServicer):
             raise ValueError(
                 f"output directory already exists and is not empty: {request.output_path!r}"
             )
+        # A running job has no output files until its first reduce task
+        # finishes, so the check above cannot see it.
+        for running_id, running_output in self._scheduler.running_outputs():
+            if resolve_inside(self._shared_root, running_output) == output:
+                raise ValueError(
+                    f"output directory {request.output_path!r} is being written by "
+                    f"running job {running_id}"
+                )
 
         try:
             ast.parse(request.job_source)
@@ -181,7 +191,12 @@ def event_writer(shared_root: Path):
 def watch_workers(scheduler: Scheduler, interval: float, stop: threading.Event) -> None:
     """Regularly check for workers that have stopped sending heartbeats."""
     while not stop.wait(interval):
-        scheduler.check_workers()
+        try:
+            scheduler.check_workers()
+        except Exception:
+            # Whatever went wrong, keep watching: if this thread stopped, no
+            # dead worker would ever be noticed again.
+            log.exception("checking for dead workers failed")
 
 
 @dataclass

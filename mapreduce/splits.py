@@ -68,7 +68,7 @@ def make_splits(files: list[tuple[str, int]], num_map: int) -> list[list[Chunk]]
 
 def read_lines(shared_root: Path, chunk: Chunk) -> Iterator[str]:
     """Yield every line whose first byte lies in the chunk, without its line ending."""
-    with open(shared_root / chunk.path, "rb") as f:
+    with open(shared_root / chunk.path, "rb", buffering=1024 * 1024) as f:
         if chunk.start > 0:
             # Step back one byte and read to the end of that line. If the
             # previous byte is a newline, this consumes only the newline and

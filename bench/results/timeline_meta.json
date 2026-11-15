@@ -1,0 +1,8 @@
+{
+  "victim": "worker-2",
+  "kill_t": 3.58,
+  "seconds": 18.94,
+  "requeues": 1,
+  "maps": 16,
+  "reduces": 8
+}

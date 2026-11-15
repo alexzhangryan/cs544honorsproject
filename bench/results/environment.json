@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-15",
+  "machine": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "docker_cpus": 8,
+  "docker_memory_gb": 7.7,
+  "docker_version": "29.3.0",
+  "dataset_mb": 100.0,
+  "map_tasks": 16,
+  "reduce_tasks": 8,
+  "heartbeat_timeout_seconds": 5,
+  "worker_cpu_limit": 1,
+  "experiments": {
+    "scaling": {
+      "trials": 5,
+      "cooldown_seconds": 25.0
+    },
+    "timeline": {
+      "trials": 1,
+      "cooldown_seconds": 25.0
+    },
+    "failure": {
+      "trials": 4,
+      "cooldown_seconds": 45.0
+    }
+  }
+}

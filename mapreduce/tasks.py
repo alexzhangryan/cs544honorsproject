@@ -21,6 +21,12 @@ from operator import itemgetter
 from pathlib import Path
 
 from mapreduce.splits import Chunk, read_lines
+from mapreduce.storage import (
+    intermediate_dir,
+    intermediate_path,
+    job_source_path,
+    output_part_path,
+)
 
 
 class JobError(Exception):
@@ -34,26 +40,6 @@ def partition(key: str, num_reduce: int) -> int:
     differs from one Python process to the next.
     """
     return zlib.crc32(key.encode("utf-8")) % num_reduce
-
-
-def job_dir(shared_root: Path, job_id: str) -> Path:
-    return shared_root / "jobs" / job_id
-
-
-def job_source_path(shared_root: Path, job_id: str) -> Path:
-    return job_dir(shared_root, job_id) / "job.py"
-
-
-def intermediate_dir(shared_root: Path, job_id: str) -> Path:
-    return job_dir(shared_root, job_id) / "intermediate"
-
-
-def intermediate_path(shared_root: Path, job_id: str, map_id: int, reduce_id: int) -> Path:
-    return intermediate_dir(shared_root, job_id) / f"map-{map_id}-reduce-{reduce_id}.jsonl"
-
-
-def output_part_path(shared_root: Path, output_path: str, reduce_id: int) -> Path:
-    return shared_root / output_path / f"part-{reduce_id:05d}.txt"
 
 
 def load_job(path: Path) -> types.ModuleType:

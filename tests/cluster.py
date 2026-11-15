@@ -17,7 +17,7 @@ from helpers import REPO
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
 from mapreduce.boss import start_boss
-from mapreduce.tasks import job_dir
+from mapreduce.storage import events_path
 
 
 class Cluster:
@@ -90,7 +90,7 @@ class Cluster:
         raise TimeoutError(f"{job_id} still running after {timeout}s\n{self.worker_logs()}")
 
     def events(self, job_id: str) -> list:
-        lines = (job_dir(self.shared_root, job_id) / "events.jsonl").read_text().splitlines()
+        lines = events_path(self.shared_root, job_id).read_text().splitlines()
         return [json.loads(line) for line in lines]
 
     def worker_logs(self) -> str:

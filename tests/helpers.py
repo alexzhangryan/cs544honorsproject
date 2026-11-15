@@ -7,7 +7,8 @@ from collections import Counter
 from pathlib import Path
 
 from mapreduce.splits import list_input_files, make_splits
-from mapreduce.tasks import job_source_path, run_task
+from mapreduce.storage import job_source_path
+from mapreduce.tasks import run_task
 
 REPO = Path(__file__).resolve().parent.parent
 WORDCOUNT = REPO / "examples" / "wordcount.py"

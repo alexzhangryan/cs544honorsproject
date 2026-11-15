@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package mapreduce;
+
+// The boss is the only server. The client and the workers all call it.
+service Boss {
+  // Called by the client.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobReply);
+  rpc GetJobStatus(JobStatusRequest) returns (JobStatusReply);
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersReply);
+
+  // Called by workers.
+  rpc GetTask(GetTaskRequest) returns (TaskAssignment);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatReply);
+  rpc ReportTask(ReportTaskRequest) returns (ReportTaskReply);
+}
+
+enum TaskKind {
+  NONE = 0;    // nothing to do right now; ask again shortly
+  MAP = 1;
+  REDUCE = 2;
+}
+
+// A byte range of one input file. The path is relative to the shared
+// storage root.
+message Chunk {
+  string path = 1;
+  int64 start = 2;
+  int64 end = 3;
+}
+
+message SubmitJobRequest {
+  string input_path = 1;    // file or directory, relative to the shared root
+  string output_path = 2;   // directory, relative to the shared root
+  string job_source = 3;    // source of the file defining map_fn and reduce_fn
+  int32 num_map = 4;
+  int32 num_reduce = 5;
+}
+
+message SubmitJobReply {
+  string job_id = 1;
+}
+
+message JobStatusRequest {
+  string job_id = 1;
+}
+
+message JobStatusReply {
+  string job_id = 1;
+  string state = 2;             // RUNNING, SUCCEEDED or FAILED
+  int32 maps_done = 3;
+  int32 maps_total = 4;
+  int32 reduces_done = 5;
+  int32 reduces_total = 6;
+  string error = 7;             // set when state is FAILED
+  double elapsed_seconds = 8;   // from submission to now, or to the end
+  int32 requeues = 9;           // tasks re-queued after a worker failure
+  string output_path = 10;
+}
+
+message ListWorkersRequest {}
+
+message WorkerInfo {
+  string worker_id = 1;
+  bool alive = 2;
+  string current_task = 3;      // for example "job-...: map 3", or empty
+  double seconds_since_contact = 4;
+}
+
+message ListWorkersReply {
+  repeated WorkerInfo workers = 1;
+}
+
+message GetTaskRequest {
+  string worker_id = 1;
+}
+
+message TaskAssignment {
+  TaskKind kind = 1;
+  string job_id = 2;
+  int32 task_id = 3;
+  int32 attempt = 4;            // goes up each time the task is handed out
+  int32 num_map = 5;
+  int32 num_reduce = 6;
+  repeated Chunk chunks = 7;    // map tasks only
+  string output_path = 8;       // reduce tasks only
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+}
+
+message HeartbeatReply {}
+
+message ReportTaskRequest {
+  string worker_id = 1;
+  string job_id = 2;
+  TaskKind kind = 3;
+  int32 task_id = 4;
+  int32 attempt = 5;
+  bool success = 6;
+  string error = 7;             // traceback text when success is false
+}
+
+message ReportTaskReply {
+  bool accepted = 1;            // false for a stale or unknown report
+}

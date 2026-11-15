@@ -54,6 +54,14 @@ class JobStatus:
 
 
 @dataclass
+class WorkerStatus:
+    worker_id: str
+    alive: bool
+    current_task: str  # for example "map 3 of job-...", or "" when idle
+    seconds_since_contact: float
+
+
+@dataclass
 class _Task:
     kind: str
     task_id: int
@@ -61,6 +69,15 @@ class _Task:
     state: str = IDLE
     worker: Optional[str] = None
     attempt: int = 0  # goes up each time the task is handed out
+    losses: int = 0  # how many times a worker died while running it
+
+
+@dataclass
+class _Worker:
+    worker_id: str
+    last_seen: float
+    alive: bool = True
+    task: Optional[tuple[str, str, int]] = None  # (job id, kind, task id) it is running
 
 
 @dataclass
@@ -87,13 +104,22 @@ class _Job:
 class Scheduler:
     def __init__(
         self,
+        heartbeat_timeout: float = 5.0,
+        max_losses: int = 3,
         clock: Callable[[], float] = time.monotonic,
         on_event: Optional[Callable[[str, dict], None]] = None,
     ):
+        """
+        heartbeat_timeout: seconds of silence after which a worker is dead.
+        max_losses: a task that loses its worker this many times fails its job.
+        """
+        self._heartbeat_timeout = heartbeat_timeout
+        self._max_losses = max_losses
         self._clock = clock
         self._on_event = on_event
         self._lock = threading.Lock()
         self._jobs: dict[str, _Job] = {}  # in submission order
+        self._workers: dict[str, _Worker] = {}
 
     def add_job(
         self,
@@ -123,6 +149,11 @@ class Scheduler:
         oldest job that has one ready.
         """
         with self._lock:
+            worker = self._contact(worker_id)
+            # Workers run one task at a time and only ask when they are idle.
+            # One that asks while we still show it running a task must have
+            # restarted, so that task is lost.
+            self._lose_task(worker)
             for job in self._jobs.values():
                 if job.state != RUNNING:
                     continue
@@ -132,6 +163,7 @@ class Scheduler:
                 task.state = IN_PROGRESS
                 task.worker = worker_id
                 task.attempt += 1
+                worker.task = (job.job_id, task.kind, task.task_id)
                 self._event(job, "assigned", task)
                 return Assignment(
                     kind=task.kind,
@@ -158,9 +190,14 @@ class Scheduler:
         """Record the outcome of a task. Returns False if the report is ignored.
 
         A report counts only if it is for the current attempt of a task that
-        is in progress on the reporting worker. Anything else is stale.
+        is in progress on the reporting worker. Anything else is stale: for
+        example, a report from a worker that was declared dead and whose task
+        has been given to another worker.
         """
         with self._lock:
+            worker = self._contact(worker_id)
+            if worker.task == (job_id, kind, task_id):
+                worker.task = None  # whatever the outcome, it is no longer running this
             job = self._jobs.get(job_id)
             if job is None or job.state != RUNNING:
                 return False
@@ -184,6 +221,43 @@ class Scheduler:
                 self._event(job, "task_failed", task)
                 self._finish(job, FAILED, error or f"{kind} task {task_id} failed")
             return True
+
+    def heartbeat(self, worker_id: str) -> None:
+        """Note that this worker is alive."""
+        with self._lock:
+            self._contact(worker_id)
+
+    def check_workers(self) -> list[str]:
+        """Declare dead every worker that has been silent for too long, and
+        put the task it was running back in the queue.
+
+        Returns the ids of the workers that were newly declared dead. The
+        boss calls this regularly from a background thread.
+        """
+        with self._lock:
+            now = self._clock()
+            newly_dead = []
+            for worker in self._workers.values():
+                if worker.alive and now - worker.last_seen > self._heartbeat_timeout:
+                    worker.alive = False
+                    newly_dead.append(worker.worker_id)
+                    self._lose_task(worker)
+            return newly_dead
+
+    def workers(self) -> list[WorkerStatus]:
+        """Every worker that has ever contacted the boss, sorted by id."""
+        with self._lock:
+            now = self._clock()
+            result = []
+            for worker in sorted(self._workers.values(), key=lambda w: w.worker_id):
+                current = ""
+                if worker.task is not None:
+                    job_id, kind, task_id = worker.task
+                    current = f"{kind} {task_id} of {job_id}"
+                result.append(
+                    WorkerStatus(worker.worker_id, worker.alive, current, now - worker.last_seen)
+                )
+            return result
 
     def job_status(self, job_id: str) -> Optional[JobStatus]:
         with self._lock:
@@ -211,6 +285,44 @@ class Scheduler:
             return list(job.events) if job else []
 
     # Everything below is called with the lock held.
+
+    def _contact(self, worker_id: str) -> _Worker:
+        """Record that we heard from this worker. A dead worker that makes
+        contact again is simply alive again, with nothing to do."""
+        worker = self._workers.get(worker_id)
+        if worker is None:
+            worker = self._workers[worker_id] = _Worker(worker_id, self._clock())
+        worker.last_seen = self._clock()
+        worker.alive = True
+        return worker
+
+    def _lose_task(self, worker: _Worker) -> None:
+        """The worker is no longer running its task (it died or restarted).
+        Put the task back in the queue so another worker picks it up.
+
+        Tasks the worker completed earlier are left alone: their output is
+        already in shared storage.
+        """
+        if worker.task is None:
+            return
+        job_id, kind, task_id = worker.task
+        worker.task = None
+        job = self._jobs[job_id]
+        task = job.task(kind, task_id)
+        if job.state != RUNNING or task.state != IN_PROGRESS or task.worker != worker.worker_id:
+            return  # nothing to recover, for example because the job already failed
+
+        self._event(job, "requeued", task)
+        task.state = IDLE
+        task.worker = None
+        task.losses += 1
+        job.requeues += 1
+        if task.losses >= self._max_losses:
+            # A task that takes down every worker it runs on would otherwise
+            # be retried forever.
+            self._finish(
+                job, FAILED, f"{kind} task {task_id} lost its worker {task.losses} times; giving up"
+            )
 
     @staticmethod
     def _next_ready_task(job: _Job) -> Optional[_Task]:

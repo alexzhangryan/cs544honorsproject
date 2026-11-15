@@ -157,3 +157,154 @@ def test_events_recorded():
     ]
     assert events[1] == {"t": 2.0, "event": "assigned", "kind": "map", "task": 0, "attempt": 1, "worker": "w1"}
     assert seen == [("job-1", event) for event in events]
+
+
+# Worker failure handling.
+
+
+def test_silent_worker_declared_dead_after_timeout():
+    scheduler, clock = make()
+    scheduler.heartbeat("w1")
+
+    clock.advance(5.0)
+    assert scheduler.check_workers() == []  # exactly at the limit is still alive
+
+    clock.advance(0.1)
+    assert scheduler.check_workers() == ["w1"]
+    assert scheduler.check_workers() == []  # reported only once
+    assert [(w.worker_id, w.alive) for w in scheduler.workers()] == [("w1", False)]
+
+
+def test_heartbeat_keeps_worker_alive():
+    scheduler, clock = make()
+    map0 = scheduler.get_task("w1")
+
+    for _ in range(10):
+        clock.advance(4)
+        scheduler.heartbeat("w1")
+        assert scheduler.check_workers() == []
+
+    assert finish(scheduler, "w1", map0)
+    assert scheduler.job_status("job-1").requeues == 0
+
+
+def test_dead_workers_task_requeued_with_new_attempt():
+    scheduler, clock = make()
+    lost = scheduler.get_task("w1")
+    assert (lost.kind, lost.task_id, lost.attempt) == ("map", 0, 1)
+
+    clock.advance(6)
+    scheduler.check_workers()
+
+    assert scheduler.job_status("job-1").requeues == 1
+    again = scheduler.get_task("w2")
+    assert (again.kind, again.task_id, again.attempt) == ("map", 0, 2)
+
+
+def test_completed_tasks_not_rerun():
+    scheduler, clock = make(num_map=2, num_reduce=1)
+    finish(scheduler, "w1", scheduler.get_task("w1"))  # map 0 is complete
+    scheduler.get_task("w1")  # w1 starts map 1, then dies
+
+    clock.advance(6)
+    scheduler.check_workers()
+
+    status = scheduler.job_status("job-1")
+    assert (status.maps_done, status.requeues) == (1, 1)
+    again = scheduler.get_task("w2")
+    assert (again.kind, again.task_id, again.attempt) == ("map", 1, 2)
+
+
+def test_late_report_from_dead_worker_ignored():
+    scheduler, clock = make(num_map=1, num_reduce=1)
+    first = scheduler.get_task("w1")
+    clock.advance(6)
+    scheduler.check_workers()
+
+    assert not finish(scheduler, "w1", first)  # arrives while the task waits to be re-run
+    second = scheduler.get_task("w2")
+    assert not finish(scheduler, "w1", first)  # arrives while w2 is running the task
+    assert scheduler.job_status("job-1").maps_done == 0
+
+    assert finish(scheduler, "w2", second)
+    assert scheduler.job_status("job-1").maps_done == 1
+
+
+def test_dead_worker_rejoins():
+    scheduler, clock = make()
+    scheduler.heartbeat("w1")
+    clock.advance(6)
+    assert scheduler.check_workers() == ["w1"]
+
+    assignment = scheduler.get_task("w1")
+
+    assert assignment is not None
+    assert [(w.worker_id, w.alive) for w in scheduler.workers()] == [("w1", True)]
+    assert finish(scheduler, "w1", assignment)
+
+
+def test_worker_asking_while_holding_task_requeues_it():
+    scheduler, _ = make()
+    first = scheduler.get_task("w1")
+
+    second = scheduler.get_task("w1")  # w1 restarted and lost what it was doing
+
+    assert (second.task_id, second.attempt) == (first.task_id, 2)
+    assert scheduler.job_status("job-1").requeues == 1
+    assert not finish(scheduler, "w1", first)
+    assert finish(scheduler, "w1", second)
+
+
+def test_three_losses_fail_job():
+    scheduler, clock = make()
+
+    for worker in ("w1", "w2"):
+        scheduler.get_task(worker)
+        clock.advance(6)
+        scheduler.check_workers()
+    assert scheduler.job_status("job-1").state == "RUNNING"
+
+    scheduler.get_task("w3")
+    clock.advance(6)
+    scheduler.check_workers()
+
+    status = scheduler.job_status("job-1")
+    assert status.state == "FAILED"
+    assert "map task 0 lost its worker 3 times" in status.error
+    assert scheduler.get_task("w4") is None
+
+
+def test_events_record_requeue():
+    scheduler, clock = make()
+    scheduler.get_task("w1")
+    clock.advance(6)
+    scheduler.check_workers()
+
+    assert scheduler.events("job-1")[-1] == {
+        "t": 6.0, "event": "requeued", "kind": "map", "task": 0, "attempt": 1, "worker": "w1",
+    }
+
+
+def test_dead_worker_of_failed_job_changes_nothing():
+    scheduler, clock = make(num_map=2, num_reduce=1)
+    scheduler.get_task("w1")
+    failing = scheduler.get_task("w2")
+    scheduler.report("w2", "job-1", "map", failing.task_id, failing.attempt, False, "boom")
+
+    clock.advance(6)
+    scheduler.check_workers()
+
+    status = scheduler.job_status("job-1")
+    assert (status.state, status.requeues, status.error) == ("FAILED", 0, "boom")
+
+
+def test_workers_listing():
+    scheduler, clock = make()
+    scheduler.get_task("w2")
+    scheduler.heartbeat("w1")
+    clock.advance(2)
+    scheduler.heartbeat("w1")
+
+    listing = [(w.worker_id, w.alive, w.current_task, w.seconds_since_contact) for w in scheduler.workers()]
+
+    assert listing == [("w1", True, "", 0.0), ("w2", True, "map 0 of job-1", 2.0)]

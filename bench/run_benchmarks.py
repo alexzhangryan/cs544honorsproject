@@ -260,6 +260,15 @@ def prepare_data(size_mb: float) -> None:
     upload(DATA, SHARED, INPUT)
 
 
+def boss_heartbeat_timeout() -> float:
+    """The heartbeat timeout the running boss was started with."""
+    env = docker("inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", "mr-boss")
+    for line in env.splitlines():
+        if line.startswith("MR_HEARTBEAT_TIMEOUT="):
+            return float(line.split("=", 1)[1])
+    return 5.0  # the boss's default
+
+
 def write_environment(args, experiments: list) -> None:
     """Record the machine and the settings used. The experiments can be run
     one at a time with different settings, so those are kept per experiment."""
@@ -280,8 +289,8 @@ def write_environment(args, experiments: list) -> None:
         "dataset_mb": args.size_mb,
         "map_tasks": MAPS,
         "reduce_tasks": REDUCES,
-        "heartbeat_timeout_seconds": 5,
-        "worker_cpu_limit": 1,
+        "heartbeat_timeout_seconds": boss_heartbeat_timeout(),
+        "worker_cpu_limit": int(docker("inspect", "--format", "{{.HostConfig.NanoCpus}}", "mr-worker-1")) / 1e9,
     })
     path.write_text(json.dumps(info, indent=2) + "\n")
 

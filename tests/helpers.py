@@ -88,3 +88,20 @@ def run_job_locally(shared_root, job_file, input_path, output_path, num_map, num
         run_task(str(shared_root), map_task(job_id, map_id, chunks, num_map, num_reduce))
     for reduce_id in range(num_reduce):
         run_task(str(shared_root), reduce_task(job_id, reduce_id, num_map, num_reduce, output_path))
+
+
+def as_task(assignment, worker_id: str) -> dict:
+    """Turn a TaskAssignment message into the dict that run_task takes."""
+    from mapreduce import mapreduce_pb2
+    from mapreduce.splits import Chunk
+
+    if assignment.kind == mapreduce_pb2.MAP:
+        chunks = [Chunk(c.path, c.start, c.end) for c in assignment.chunks]
+        return map_task(
+            assignment.job_id, assignment.task_id, chunks, assignment.num_map,
+            assignment.num_reduce, assignment.attempt, worker_id,
+        )
+    return reduce_task(
+        assignment.job_id, assignment.task_id, assignment.num_map, assignment.num_reduce,
+        assignment.output_path, assignment.attempt, worker_id,
+    )

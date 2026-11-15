@@ -145,3 +145,27 @@ def test_boss_unreachable_message(shared_root, capsys):
 
     assert time.monotonic() - started < 10
     assert_one_line_error(capsys.readouterr(), "cannot reach the boss at 127.0.0.1:1")
+
+
+def test_workers_command(cluster, shared_root, capsys):
+    cluster.start_workers(2)
+    cluster.wait_until(lambda: len(cluster.workers()) == 2, "both workers have contacted the boss")
+
+    assert client(cluster, shared_root, "workers") == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert [line.split()[:2] for line in lines] == [["w0", "alive"], ["w1", "alive"]]
+
+    cluster.kill_worker(0)
+    cluster.wait_until(lambda: not cluster.workers()["w0"].alive, "w0 is declared dead")
+
+    assert client(cluster, shared_root, "workers") == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split()[:2] == ["w0", "DEAD"]
+    assert "last contact" in lines[0]
+    assert lines[1].split()[:2] == ["w1", "alive"]
+
+
+def test_workers_command_with_no_workers(cluster, shared_root, capsys):
+    assert client(cluster, shared_root, "workers") == 0
+
+    assert "no workers" in capsys.readouterr().out

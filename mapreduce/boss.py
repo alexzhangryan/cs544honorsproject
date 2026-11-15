@@ -1,7 +1,9 @@
 """The boss: a gRPC server in front of the scheduler.
 
 The boss accepts jobs from the client, splits their input, and hands tasks
-to workers that ask for them. It never calls a worker.
+to workers that ask for them. It never calls a worker. A background thread
+watches for workers that have gone silent, so their tasks can be given to
+someone else.
 
 Run it with:  python -m mapreduce.boss
 """
@@ -15,6 +17,7 @@ import logging
 import os
 import secrets
 import shutil
+import threading
 import time
 from concurrent import futures
 from dataclasses import dataclass
@@ -112,7 +115,17 @@ class BossServicer(pb_grpc.BossServicer):
         )
 
     def ListWorkers(self, request, context):
-        return pb.ListWorkersReply()
+        return pb.ListWorkersReply(
+            workers=[
+                pb.WorkerInfo(
+                    worker_id=worker.worker_id,
+                    alive=worker.alive,
+                    current_task=worker.current_task,
+                    seconds_since_contact=worker.seconds_since_contact,
+                )
+                for worker in self._scheduler.workers()
+            ]
+        )
 
     # Called by workers.
 
@@ -132,6 +145,7 @@ class BossServicer(pb_grpc.BossServicer):
         )
 
     def Heartbeat(self, request, context):
+        self._scheduler.heartbeat(request.worker_id)
         return pb.HeartbeatReply()
 
     def ReportTask(self, request, context):
@@ -164,6 +178,12 @@ def event_writer(shared_root: Path):
     return write
 
 
+def watch_workers(scheduler: Scheduler, interval: float, stop: threading.Event) -> None:
+    """Regularly check for workers that have stopped sending heartbeats."""
+    while not stop.wait(interval):
+        scheduler.check_workers()
+
+
 @dataclass
 class BossHandle:
     """A running boss, as returned by start_boss."""
@@ -171,23 +191,38 @@ class BossHandle:
     server: grpc.Server
     scheduler: Scheduler
     port: int
+    _stop_watching: threading.Event
 
     def stop(self) -> None:
+        self._stop_watching.set()
         self.server.stop(grace=None).wait()
 
 
-def start_boss(shared_root: Path, host: str = "0.0.0.0", port: int = 50051) -> BossHandle:
+def start_boss(
+    shared_root: Path,
+    host: str = "0.0.0.0",
+    port: int = 50051,
+    heartbeat_timeout: float = 5.0,
+    monitor_interval: float = 0.5,
+) -> BossHandle:
     """Start the boss in background threads and return a handle to it.
 
     Pass port=0 to let the system pick a free port (see BossHandle.port).
+    heartbeat_timeout is how long a worker may stay silent before it is
+    presumed dead; monitor_interval is how often that is checked.
     """
     shared_root = Path(shared_root)
-    scheduler = Scheduler(on_event=event_writer(shared_root))
+    scheduler = Scheduler(heartbeat_timeout=heartbeat_timeout, on_event=event_writer(shared_root))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
     pb_grpc.add_BossServicer_to_server(BossServicer(scheduler, shared_root), server)
     bound_port = server.add_insecure_port(f"{host}:{port}")
     server.start()
-    return BossHandle(server=server, scheduler=scheduler, port=bound_port)
+
+    stop_watching = threading.Event()
+    threading.Thread(
+        target=watch_workers, args=(scheduler, monitor_interval, stop_watching), daemon=True
+    ).start()
+    return BossHandle(server=server, scheduler=scheduler, port=bound_port, _stop_watching=stop_watching)
 
 
 def main() -> None:
@@ -195,11 +230,18 @@ def main() -> None:
     parser.add_argument("--shared", default=os.environ.get("MR_SHARED", "/shared"),
                         help="shared storage directory (default: $MR_SHARED or /shared)")
     parser.add_argument("--port", type=int, default=50051)
+    parser.add_argument("--heartbeat-timeout", type=float,
+                        default=float(os.environ.get("MR_HEARTBEAT_TIMEOUT", "5")),
+                        help="seconds of silence after which a worker is presumed dead "
+                             "(default: $MR_HEARTBEAT_TIMEOUT or 5)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
-    handle = start_boss(Path(args.shared), port=args.port)
-    log.info("listening on port %d, shared storage at %s", handle.port, args.shared)
+    handle = start_boss(Path(args.shared), port=args.port, heartbeat_timeout=args.heartbeat_timeout)
+    log.info(
+        "listening on port %d, shared storage at %s, heartbeat timeout %.1fs",
+        handle.port, args.shared, args.heartbeat_timeout,
+    )
     handle.server.wait_for_termination()
 
 

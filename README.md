@@ -16,7 +16,8 @@ step 7.
 ## What you need
 
 - Docker with Compose v2 (`docker compose version`)
-- Python 3.10 or later, for the client
+- Python 3.10 or later, for the client. On Ubuntu, creating the virtual
+  environment in step 2 also needs `sudo apt install python3-venv`.
 
 Run every command below from the root of this repository.
 
@@ -153,7 +154,8 @@ python -m mapreduce.client submit ... --no-wait   # print the job id and return 
 ```
 
 If a job's code raises an exception, the job fails and the client prints the
-traceback.
+traceback. A failed job can leave some part files behind, so delete its output
+directory (or choose another `--output`) before submitting again.
 
 ## 7. Try the special feature: kill a worker
 
@@ -217,9 +219,9 @@ python -m pytest               # unit and integration tests; no Docker needed
 python -m pytest -m docker     # end-to-end tests on the Compose cluster
 ```
 
-The first command runs about 95 tests in under a minute. They include
-integration tests that start a real boss and real worker processes and kill
-workers in the middle of a job. The second command builds and starts the
+The first command runs about 100 tests in under a minute. They include
+integration tests that start a real boss and real worker processes, then
+kill, restart and freeze workers in the middle of a job. The second command builds and starts the
 Compose cluster if it is not already running, and includes a test that runs
 `docker kill` on a worker during a job.
 
@@ -228,14 +230,22 @@ GitHub Actions runs both on every pull request
 
 ## Performance evaluation
 
-[docs/evaluation.md](docs/evaluation.md) has the measurements and plots. To
-reproduce them (this takes about 20 minutes and stops and kills worker
-containers as it goes):
+[docs/evaluation.md](docs/evaluation.md) has the measurements and plots. They
+were produced with these commands, which take about 45 minutes and stop and
+kill worker containers as they go:
 
 ```bash
-python bench/run_benchmarks.py
+pip install -r requirements-dev.txt
+python bench/run_benchmarks.py --only scaling --trials 5 --cooldown 25
+python bench/run_benchmarks.py --only failure --trials 4 --cooldown 45
+python bench/run_benchmarks.py --only timeline --cooldown 25
 python bench/plot.py
 ```
+
+`--cooldown` pauses before each run. The measurements were taken on a
+fanless laptop that slows down when it gets hot. On a machine with proper
+cooling, `python bench/run_benchmarks.py` runs all three experiments without
+pauses in about 15 minutes.
 
 ## Stopping and cleaning up
 
@@ -248,7 +258,7 @@ rm -rf shared/input shared/output shared/jobs  # empty shared storage
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `MR_HEARTBEAT_TIMEOUT` (environment variable read by `docker compose up`) | `5` | seconds of silence after which the boss presumes a worker dead |
+| `MR_HEARTBEAT_TIMEOUT` (environment variable read by `docker compose up`) | `5` | seconds of silence after which the boss presumes a worker dead; keep it well above the 1 second between heartbeats |
 | `--boss` (client option) or `MR_BOSS` | `localhost:50051` | address of the boss |
 | `--shared` (client option) or `MR_SHARED_DIR` | `shared` | the shared storage directory on the host |
 

@@ -115,7 +115,8 @@ python -m mapreduce.client submit \
 
 `submit` prints the job id, then shows progress until the job finishes
 (`--no-wait` returns immediately). The boss rejects a job whose output
-directory already exists and is not empty.
+directory already exists and is not empty, or is being written by a job that
+is still running.
 
 **Check on things**
 
@@ -291,6 +292,13 @@ All tests use pytest. GitHub Actions runs them on every pull request.
 - One worker is killed with SIGKILL while it holds a task; the job still
   succeeds, the output matches the reference, and the log shows the re-run.
 - All workers but one are killed; the job still succeeds.
+- A killed worker is restarted under the same name; it rejoins and does more
+  work.
+- A worker is frozen until the boss presumes it dead, then resumed. It
+  finishes its old task and reports it; the late report is ignored and the
+  output is still correct.
+- A healthy worker running a long CPU-bound task is not mistaken for a dead
+  one.
 - A job whose `map_fn` raises ends as failed with the traceback.
 
 **End-to-end test** (real Docker Compose cluster)
@@ -301,22 +309,33 @@ All tests use pytest. GitHub Actions runs them on every pull request.
 ## 11. Performance evaluation
 
 Everything is measured on the real Compose cluster on one machine. The
-workload is word count over generated text, sized so that a four-worker run
-takes roughly 20 to 30 seconds, with M = 16 and R = 4. Each configuration is
-run three times. Job time is measured by the boss, from submission to the last
-reduce task completing. A script runs the experiments and writes CSV files; a
-second script draws the plots with matplotlib.
+workload is word count over 100 MB of generated text, with M = 16 and R = 8.
+
+R is larger than the number of workers on purpose. Word frequencies are
+skewed, so one reduce task has much more to do than the others. With more
+reduce tasks than workers, the other workers have further tasks to take
+while one of them is busy with the big one.
+
+Each configuration is run several times (five for the first plot, four for
+the second). The configurations are interleaved, and in the failure
+experiment their order rotates from round to round, so that a machine that
+slowly gets faster or slower affects all of them alike.
+Job time is measured by the boss, from submission to the last reduce task
+completing. One script runs the experiments and writes CSV files, and a
+second draws the plots with matplotlib. The results are in
+`docs/evaluation.md`.
 
 **Plot 1: speedup with more workers.** Job time against the number of live
-workers (1, 2, 3, 4), mean with min-max bars, plus a dashed line for ideal
-speedup. This shows that tasks really are spread across the 1-CPU workers.
+workers (1, 2, 3, 4): one dot per run and a line through the medians, plus a
+dashed line for ideal speedup. This shows that tasks really are spread across
+the 1-CPU workers.
 
 **Plot 2: cost of a failure.** Bars for four cases: four workers with no
 failure; one worker killed during the map phase; one worker killed during the
-reduce phase; three workers from the start. The expectation is that a run
-with a failure costs about as much as having three workers, plus the
-detection delay. A table next to the plot records that every run's output
-is byte-identical to the failure-free output.
+reduce phase; three workers from the start. Bars are medians, with one dot
+per run. The expectation is that a run with a failure costs about as much as
+having three workers, plus the detection delay. For every run the evaluation
+also records whether its output is byte-identical to the failure-free output.
 
 **Plot 3: timeline of one recovery.** One row per worker, one bar per task,
 coloured by map or reduce. A vertical line marks the kill; the lost attempt is

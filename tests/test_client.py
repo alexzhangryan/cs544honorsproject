@@ -230,3 +230,19 @@ def test_more_tasks_than_the_system_allows(cluster, shared_root, capsys):
     assert client(cluster, shared_root, *args) == 1
 
     assert_one_line_error(capsys.readouterr(), "--reduces must be between 1 and 10000")
+
+def test_submit_shows_intermediate_data_size_and_takes_reduce_order(cluster, shared_root, capsys):
+    write_input(shared_root, TEXTS)
+    cluster.start_workers(2)
+
+    assert client(cluster, shared_root, *submit_args(), "--reduce-order", "numerical") == 0
+
+    out = capsys.readouterr().out
+    assert "SUCCEEDED" in out
+    assert "intermediate data: " in out
+    job_id = out.split()[1]
+    first_reduce = next(
+        event for event in cluster.events(job_id)
+        if event["event"] == "assigned" and event["kind"] == "reduce"
+    )
+    assert first_reduce["task"] == 0

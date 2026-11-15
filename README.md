@@ -136,10 +136,12 @@ map 0/8  reduce 0/4  0.0s
 map 8/8  reduce 2/4  0.5s
 map 8/8  reduce 4/4  0.6s
 SUCCEEDED in 0.6s
+intermediate data: 1.1 MB
 output: shared/output/wordcount
 ```
 
-There is one output file per reduce task. To see the ten most common words:
+"Intermediate data" is the total size of what the map tasks wrote for the
+reduce tasks. There is one output file per reduce task. To see the ten most common words:
 
 ```bash
 cat shared/output/wordcount/part-*.txt | sort -t$'\t' -k2 -nr | head

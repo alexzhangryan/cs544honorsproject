@@ -71,7 +71,15 @@ def upload(local_path: Path, shared_dir: Path, dest: str) -> Path:
     return target
 
 
-def submit_job(stub, input_path: str, output_path: str, job_file: Path, maps: int, reduces: int) -> str:
+def submit_job(
+    stub,
+    input_path: str,
+    output_path: str,
+    job_file: Path,
+    maps: int,
+    reduces: int,
+    reduce_order: str = "largest_first",
+) -> str:
     """Send a job to the boss and return its id."""
     for option, count in (("--maps", maps), ("--reduces", reduces)):
         if not 1 <= count <= MAX_TASKS:
@@ -88,6 +96,7 @@ def submit_job(stub, input_path: str, output_path: str, job_file: Path, maps: in
         job_source=source,
         num_map=maps,
         num_reduce=reduces,
+        reduce_order=reduce_order,
     )
     return stub.SubmitJob(request, timeout=RPC_TIMEOUT).job_id
 
@@ -111,6 +120,14 @@ def progress_line(status) -> str:
     )
 
 
+def format_size(size: int) -> str:
+    for unit in ("bytes", "KB", "MB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
 def requeue_note(status) -> str:
     if status.requeues == 0:
         return ""
@@ -127,7 +144,10 @@ def cmd_upload(args, stub) -> int:
 
 
 def cmd_submit(args, stub) -> int:
-    job_id = submit_job(stub, args.input, args.output, Path(args.job), args.maps, args.reduces)
+    job_id = submit_job(
+        stub, args.input, args.output, Path(args.job), args.maps, args.reduces,
+        reduce_order=args.reduce_order.replace("-", "_"),
+    )
     print(f"submitted {job_id}")
     if args.no_wait:
         return 0
@@ -150,6 +170,7 @@ def cmd_submit(args, stub) -> int:
     if status.state == "SUCCEEDED":
         note = requeue_note(status)
         print(f"SUCCEEDED in {status.elapsed_seconds:.1f}s" + (f" ({note})" if note else ""))
+        print(f"intermediate data: {format_size(status.intermediate_bytes)}")
         print(f"output: {Path(args.shared) / status.output_path}")
         return 0
     print(f"FAILED after {status.elapsed_seconds:.1f}s")
@@ -162,6 +183,8 @@ def cmd_status(args, stub) -> int:
     print(f"{status.job_id}  {status.state}  {progress_line(status)}")
     if requeue_note(status):
         print(requeue_note(status))
+    if status.intermediate_bytes:
+        print(f"intermediate data: {format_size(status.intermediate_bytes)}")
     if status.state == "FAILED":
         print(status.error)
     return 0
@@ -215,6 +238,9 @@ def build_parser() -> argparse.ArgumentParser:
     submit_cmd.add_argument("--maps", required=True, type=int, help="number of map tasks")
     submit_cmd.add_argument("--reduces", required=True, type=int, help="number of reduce tasks")
     submit_cmd.add_argument("--no-wait", action="store_true", help="print the job id and return immediately")
+    submit_cmd.add_argument("--reduce-order", choices=["largest-first", "numerical"], default="largest-first",
+                            help="hand out reduce tasks with the most input first (the default), "
+                                 "or in order of task number")
     submit_cmd.set_defaults(run=cmd_submit)
 
     status_cmd = commands.add_parser("status", help="show the progress of a job")

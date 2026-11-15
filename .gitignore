@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated protobuf code (see README for the command that creates it)
+*_pb2.py
+*_pb2_grpc.py
+
+# Shared storage contents (the directory itself is kept)
+shared/*
+!shared/.gitkeep
+
+# Generated benchmark datasets
+data/bench/
+
+.DS_Store

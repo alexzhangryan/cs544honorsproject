@@ -169,3 +169,45 @@ def test_workers_command_with_no_workers(cluster, shared_root, capsys):
     assert client(cluster, shared_root, "workers") == 0
 
     assert "no workers" in capsys.readouterr().out
+
+
+# Mistakes on the command line are reported as one line, never as a traceback.
+
+
+def test_job_path_that_is_a_directory(cluster, shared_root, tmp_path, capsys):
+    write_input(shared_root, TEXTS)
+
+    assert client(cluster, shared_root, *submit_args(job=tmp_path)) == 1
+
+    assert_one_line_error(capsys.readouterr(), "cannot read the job file")
+
+
+def test_job_file_that_is_not_text(cluster, shared_root, tmp_path, capsys):
+    write_input(shared_root, TEXTS)
+    binary = tmp_path / "job.py"
+    binary.write_bytes(b"\xff\xfe\x00\x80 not text")
+
+    assert client(cluster, shared_root, *submit_args(job=binary)) == 1
+
+    assert_one_line_error(capsys.readouterr(), "cannot read the job file")
+
+
+def test_number_of_tasks_out_of_range(cluster, shared_root, capsys):
+    write_input(shared_root, TEXTS)
+    args = submit_args()
+    args[args.index("--maps") + 1] = "3000000000"
+
+    assert client(cluster, shared_root, *args) == 1
+
+    assert_one_line_error(capsys.readouterr(), "--maps")
+
+
+def test_upload_that_cannot_be_copied(shared_root, tmp_path, capsys):
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "a.txt").write_text("alpha\n")
+    (shared_root / "input").write_text("a file where a directory is needed")
+
+    assert main(["--shared", str(shared_root), "upload", str(local), "input/data"]) == 1
+
+    assert_one_line_error(capsys.readouterr(), "cannot copy")

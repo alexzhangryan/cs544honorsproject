@@ -196,3 +196,90 @@ def test_values_keep_their_types(shared_root, tmp_path):
     run_job_locally(shared_root, structured, "input", "output/x", num_map=1, num_reduce=1)
 
     assert read_output(shared_root, "output/x") == {"chars": "5", "lines": "2"}
+
+
+# Combiners.
+
+
+def test_combiner_gives_the_same_output(shared_root):
+    from helpers import WORDCOUNT_COMBINER
+
+    write_input(shared_root, TEXTS)
+
+    run_job_locally(shared_root, WORDCOUNT_COMBINER, "input/books", "output/wc", num_map=3, num_reduce=2)
+
+    assert read_output(shared_root, "output/wc") == reference_wordcount(TEXTS)
+
+
+def test_combiner_writes_one_pair_per_distinct_key(shared_root):
+    from helpers import WORDCOUNT_COMBINER, run_map_phase
+
+    write_input(shared_root, {"input/x.txt": "a b a a c b a\n"})
+
+    plain = run_map_phase(shared_root, WORDCOUNT, "input", num_map=1, num_reduce=2, job_id="plain")
+    combined = run_map_phase(shared_root, WORDCOUNT_COMBINER, "input", num_map=1, num_reduce=2, job_id="combined")
+
+    assert len(plain) == 7  # one pair per word
+    assert sorted(combined) == [("a", 4), ("b", 2), ("c", 1)]
+
+
+def test_combiner_works_in_small_batches(shared_root, monkeypatch):
+    from helpers import WORDCOUNT_COMBINER, run_map_phase
+    from mapreduce import tasks
+
+    monkeypatch.setattr(tasks, "COMBINE_BATCH", 3)  # combine after every 3 pairs
+    write_input(shared_root, {"input/x.txt": "a b a a c b a\n"})
+
+    combined = run_map_phase(shared_root, WORDCOUNT_COMBINER, "input", num_map=1, num_reduce=1, job_id="batched")
+    run_job_locally(shared_root, WORDCOUNT_COMBINER, "input", "output/x", num_map=1, num_reduce=1)
+
+    assert len(combined) > 3  # "a" was combined in more than one batch
+    assert read_output(shared_root, "output/x") == {"a": "4", "b": "2", "c": "1"}
+
+
+def test_combiner_that_changes_keys_is_partitioned_by_the_new_key(shared_root, tmp_path):
+    write_input(shared_root, {"input/x.txt": "aa bb c dd e fff\n", "input/y.txt": "gg h iii\n"})
+    by_length = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    for word in value.split():\n"
+        "        yield word, 1\n"
+        "def combine_fn(key, values):\n"
+        "    yield 'length ' + str(len(key)), sum(values)\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
+
+    run_job_locally(shared_root, by_length, "input", "output/x", num_map=2, num_reduce=3)
+
+    # read_output fails if a key shows up in two part files, which is what
+    # would happen if pairs were partitioned by the key from before combining.
+    assert read_output(shared_root, "output/x") == {"length 1": "3", "length 2": "4", "length 3": "2"}
+
+
+def test_combiner_yielding_a_non_string_key_raises(shared_root, tmp_path):
+    write_input(shared_root, {"input/x.txt": "a\n"})
+    bad = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    yield value, 1\n"
+        "def combine_fn(key, values):\n"
+        "    yield 7, sum(values)\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
+
+    with pytest.raises(TypeError, match="combine_fn"):
+        run_job_locally(shared_root, bad, "input", "output/x", num_map=1, num_reduce=1)
+
+
+def test_combine_fn_must_be_a_function(tmp_path):
+    bad = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n    yield value, 1\n"
+        "def reduce_fn(key, values):\n    yield key, sum(values)\n"
+        "combine_fn = 5\n",
+    )
+
+    with pytest.raises(JobError, match="combine_fn"):
+        load_job(bad)

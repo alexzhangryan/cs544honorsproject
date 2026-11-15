@@ -106,3 +106,22 @@ def as_task(assignment, worker_id: str) -> dict:
         assignment.job_id, assignment.task_id, assignment.num_map, assignment.num_reduce,
         assignment.output_path, assignment.attempt, worker_id,
     )
+
+
+WORDCOUNT_COMBINER = REPO / "examples" / "wordcount_combiner.py"
+
+
+def run_map_phase(shared_root, job_file, input_path, num_map, num_reduce, job_id="job-test"):
+    """Run only the map tasks of a job, and return every intermediate pair written."""
+    import json
+
+    from mapreduce.storage import intermediate_dir
+
+    install_job(shared_root, job_id, job_file)
+    splits = make_splits(list_input_files(shared_root, input_path), num_map)
+    for map_id, chunks in enumerate(splits):
+        run_task(str(shared_root), map_task(job_id, map_id, chunks, num_map, num_reduce))
+    pairs = []
+    for path in sorted(intermediate_dir(shared_root, job_id).glob("map-*.jsonl")):
+        pairs.extend(tuple(json.loads(line)) for line in path.read_text().splitlines())
+    return pairs

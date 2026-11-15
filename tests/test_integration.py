@@ -146,3 +146,19 @@ def test_worker_started_before_boss(shared_root, tmp_path):
         assert status.state == "SUCCEEDED", status.error
     finally:
         cluster.stop()
+
+
+def test_combiner_on_a_real_cluster_shrinks_the_intermediate_data(cluster, shared_root):
+    from helpers import WORDCOUNT_COMBINER
+
+    texts = {f"input/books/{i}.txt": "the cat and the hat and the bat\n" * 200 for i in range(4)}
+    write_input(shared_root, texts)
+    cluster.start_workers(4)
+
+    plain = cluster.wait(cluster.submit(WORDCOUNT, "input/books", "output/plain", maps=4, reduces=3))
+    combined = cluster.wait(cluster.submit(WORDCOUNT_COMBINER, "input/books", "output/combined", maps=4, reduces=3))
+
+    assert plain.state == combined.state == "SUCCEEDED", plain.error + combined.error
+    assert read_output(shared_root, "output/combined") == read_output(shared_root, "output/plain")
+    assert read_output(shared_root, "output/combined") == reference_wordcount(texts)
+    assert combined.intermediate_bytes * 20 < plain.intermediate_bytes

@@ -16,8 +16,7 @@ import os
 import traceback
 import types
 import zlib
-from itertools import groupby
-from operator import itemgetter
+from collections import defaultdict
 from pathlib import Path
 
 from mapreduce.splits import Chunk, read_lines
@@ -106,12 +105,15 @@ def run_reduce(
     the pairs by key, call reduce_fn once per key, and write one output file."""
     job = load_job(job_source_path(shared_root, job_id))
 
-    pairs = []
+    # Collect the values of each key. Only the values are kept, in one list
+    # per key, which takes far less memory and time than keeping every
+    # (key, value) pair and sorting them all.
+    values_by_key = defaultdict(list)
     for map_id in range(num_map):
         with open(intermediate_path(shared_root, job_id, map_id, reduce_id), encoding="utf-8") as f:
             for line in f:
-                pairs.append(json.loads(line))
-    pairs.sort(key=itemgetter(0))
+                key, value = json.loads(line)
+                values_by_key[key].append(value)
 
     final = output_part_path(shared_root, output_path, reduce_id)
     final.parent.mkdir(parents=True, exist_ok=True)
@@ -121,9 +123,8 @@ def run_reduce(
     temp = intermediate_dir(shared_root, job_id) / f"reduce-{reduce_id}.out{tmp_suffix}"
     try:
         with open(temp, "w", encoding="utf-8") as out:
-            for key, group in groupby(pairs, key=itemgetter(0)):
-                values = (value for _, value in group)
-                for out_key, out_value in job.reduce_fn(key, values) or ():
+            for key in sorted(values_by_key):
+                for out_key, out_value in job.reduce_fn(key, iter(values_by_key[key])) or ():
                     out.write(f"{out_key}\t{out_value}\n")
         os.replace(temp, final)
     except BaseException:

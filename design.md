@@ -30,8 +30,8 @@ the job finishes with the same output a failure-free run would have produced.
 - Boss failure. The boss keeps job state in memory, so if it dies, running
   jobs are lost.
 - More than one VM, or a distributed file system.
-- Reduce partitions that do not fit in a worker's memory (reduce sorts in
-  memory).
+- Reduce partitions that do not fit in a worker's memory (reduce groups its
+  input in memory).
 - Combiners, backup tasks for stragglers, and data locality.
 - Sandboxing user code, and authentication.
 
@@ -74,8 +74,9 @@ boss never calls anyone.
    `map_fn` on every line, and writes each output pair to one of R intermediate
    files, chosen by a hash of the key.
 4. When every map task is complete, the boss hands out the R reduce tasks. A
-   reduce task reads its M intermediate files, sorts the pairs by key, calls
-   `reduce_fn` once per key, and writes one output file.
+   reduce task reads its M intermediate files, collects the values of each
+   key, calls `reduce_fn` once per key in sorted key order, and writes one
+   output file.
 5. When every reduce task is complete, the boss marks the job succeeded and
    deletes the intermediate files.
 

@@ -115,7 +115,8 @@ def run_reduce(
     # (key, value) pair and sorting them all.
     values_by_key = defaultdict(list)
     for map_id in range(num_map):
-        with open(intermediate_path(shared_root, job_id, map_id, reduce_id), encoding="utf-8", buffering=IO_BUFFER) as f:
+        path = intermediate_path(shared_root, job_id, map_id, reduce_id)
+        with open(path, encoding="utf-8", buffering=IO_BUFFER) as f:
             for line in f:
                 key, value = json.loads(line)
                 values_by_key[key].append(value)

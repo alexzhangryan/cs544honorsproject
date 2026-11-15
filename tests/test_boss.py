@@ -2,6 +2,9 @@
 
 import json
 import re
+import shutil
+import threading
+import time
 
 import grpc
 import pytest
@@ -9,7 +12,7 @@ import pytest
 from helpers import TEXTS, WORDCOUNT, as_task, read_output, reference_wordcount, write_input
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
-from mapreduce.boss import start_boss
+from mapreduce.boss import start_boss, watch_workers
 from mapreduce.storage import events_path, intermediate_dir, job_source_path, resolve_inside
 from mapreduce.tasks import run_task
 
@@ -154,3 +157,61 @@ def test_resolve_inside(tmp_path):
     for bad in ("/etc", "..", "a/../../b", "", "."):
         with pytest.raises(ValueError):
             resolve_inside(tmp_path, bad)
+
+
+def test_submit_rejects_output_of_a_running_job(stub, shared_root):
+    write_input(shared_root, TEXTS)
+    running = stub.SubmitJob(wordcount_request()).job_id  # no workers, so it stays running
+
+    for same_directory in ("output/wc", "output/./wc", "output/x/../wc"):
+        with pytest.raises(grpc.RpcError) as error:
+            stub.SubmitJob(wordcount_request(output_path=same_directory))
+        assert error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert running in error.value.details()
+        assert "\n" not in error.value.details()
+
+    assert stub.SubmitJob(wordcount_request(output_path="output/other")).job_id
+
+
+def test_boss_survives_a_job_directory_being_removed(stub, shared_root):
+    write_input(shared_root, TEXTS)
+    doomed = stub.SubmitJob(wordcount_request(output_path="output/doomed")).job_id
+    shutil.rmtree(shared_root / "jobs")  # someone empties shared storage while the job runs
+
+    assignment = stub.GetTask(pb.GetTaskRequest(worker_id="w1"))  # the event log cannot be written
+    assert assignment.kind == pb.MAP
+    stub.ReportTask(
+        pb.ReportTaskRequest(
+            worker_id="w1", job_id=doomed, kind=assignment.kind, task_id=assignment.task_id,
+            attempt=assignment.attempt, success=False, error="the job file is gone",
+        )
+    )
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=doomed)).state == "FAILED"
+
+    healthy = stub.SubmitJob(wordcount_request(output_path="output/healthy")).job_id
+    work_until_idle(stub, shared_root)
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=healthy)).state == "SUCCEEDED"
+    assert read_output(shared_root, "output/healthy") == reference_wordcount(TEXTS)
+
+
+def test_watch_workers_keeps_going_after_an_error():
+    class FlakyScheduler:
+        calls = 0
+
+        def check_workers(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("boom")
+            return []
+
+    scheduler = FlakyScheduler()
+    stop = threading.Event()
+    thread = threading.Thread(target=watch_workers, args=(scheduler, 0.01, stop), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while scheduler.calls < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    stop.set()
+    thread.join(timeout=5)
+
+    assert scheduler.calls >= 3, "the watcher stopped after one failed check"

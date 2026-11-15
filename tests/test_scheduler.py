@@ -308,3 +308,40 @@ def test_workers_listing():
     listing = [(w.worker_id, w.alive, w.current_task, w.seconds_since_contact) for w in scheduler.workers()]
 
     assert listing == [("w1", True, "", 0.0), ("w2", True, "map 0 of job-1", 2.0)]
+
+
+# Robustness.
+
+
+def test_failing_event_hook_does_not_corrupt_state():
+    def broken_hook(job_id, event):
+        raise OSError("disk full")
+
+    scheduler, clock = make(num_map=1, num_reduce=1, on_event=broken_hook)
+    lost = scheduler.get_task("w1")
+    clock.advance(6)
+
+    assert scheduler.check_workers() == ["w1"]  # the lost task is re-queued despite the hook
+    again = scheduler.get_task("w2")
+    assert (again.task_id, again.attempt) == (lost.task_id, 2)
+    assert finish(scheduler, "w2", again)
+    run_to_completion(scheduler, "w2")
+
+    assert scheduler.job_status("job-1").state == "SUCCEEDED"
+    assert scheduler.events("job-1")[-1]["event"] == "job_succeeded"  # still recorded in memory
+
+
+def test_stale_report_does_not_disown_the_workers_current_task():
+    scheduler, clock = make(num_map=1, num_reduce=1)
+    first = scheduler.get_task("w1")
+    second = scheduler.get_task("w1")  # w1's report was lost; it asks again and gets attempt 2
+    assert (second.task_id, second.attempt) == (first.task_id, 2)
+
+    assert not finish(scheduler, "w1", first)  # the delayed report for attempt 1 arrives now
+
+    # w1 is still responsible for attempt 2, so if it dies the task must come back.
+    clock.advance(6)
+    assert scheduler.check_workers() == ["w1"]
+    third = scheduler.get_task("w2")
+    assert third is not None, "the task was orphaned: nobody will ever run it"
+    assert (third.task_id, third.attempt) == (first.task_id, 3)

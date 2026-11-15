@@ -1,12 +1,14 @@
 """Worker failure handling on a real boss and real worker processes.
 
-The cluster fixture uses a 1.5 second heartbeat timeout, so a dead worker
-is noticed quickly.
+The cluster fixture uses a 3 second heartbeat timeout (15 heartbeats), so a
+dead worker is noticed quickly but a busy machine does not cause false
+alarms.
 """
 
 import os
 
 from helpers import read_output, write_input
+from mapreduce.storage import intermediate_dir
 
 # About 0.6 seconds of work per map task with 6 map tasks: long enough that
 # a worker can be killed while it is certainly in the middle of one.
@@ -41,6 +43,12 @@ def test_kill_one_worker_mid_task(cluster, shared_root, tmp_path):
     cluster.start_workers(4)
     job_id = submit_slow_job(cluster, shared_root, tmp_path)
     cluster.wait_until_busy(0)
+    # Wait until its task has really started and has files open, so the kill
+    # lands in the middle of the work and leaves half-written files behind.
+    cluster.wait_until(
+        lambda: any(intermediate_dir(shared_root, job_id).glob("*.tmp-w0-*")),
+        "w0 has started writing",
+    )
 
     cluster.kill_worker(0)
     status = cluster.wait(job_id)
@@ -102,13 +110,35 @@ def test_restarted_worker_rejoins(cluster, shared_root, tmp_path):
     assert cluster.workers()["w0"].alive
 
 
+def test_paused_worker_is_replaced_and_its_late_result_ignored(cluster, shared_root, tmp_path):
+    cluster.start_workers(2)
+    job_id = submit_slow_job(cluster, shared_root, tmp_path)
+    cluster.wait_until_busy(0)
+
+    cluster.pause_worker(0)  # frozen, not dead: it will finish its task after all
+    cluster.wait_until(lambda: not cluster.workers()["w0"].alive, "w0 is presumed dead")
+    cluster.resume_worker(0)  # it wakes up, finishes the old attempt and reports it
+    status = cluster.wait(job_id)
+
+    assert status.state == "SUCCEEDED", status.error
+    assert status.requeues == 1
+    assert read_output(shared_root, "output/slow") == expected_counts()
+    assert sorted(os.listdir(shared_root / "output/slow")) == ["part-00000.txt", "part-00001.txt"]
+    # Every task counts as completed exactly once: the late report was ignored.
+    completed = [
+        (event["kind"], event["task"]) for event in cluster.events(job_id) if event["event"] == "completed"
+    ]
+    assert len(completed) == len(set(completed)) == 6 + 2
+    assert cluster.workers()["w0"].alive  # and the worker is back in service
+
+
 def test_healthy_long_task_not_declared_dead(cluster, shared_root, tmp_path):
     write_input(shared_root, {"input/one.txt": "only line\n"})
     busy = tmp_path / "busy.py"
     busy.write_text(
         "import time\n"
         "def map_fn(key, value):\n"
-        "    end = time.monotonic() + 3.0\n"  # twice the heartbeat timeout
+        f"    end = time.monotonic() + {cluster.heartbeat_timeout * 2}\n"  # twice the timeout
         "    while time.monotonic() < end:\n"
         "        pass\n"
         "    yield value, 1\n"

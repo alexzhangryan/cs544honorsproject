@@ -27,7 +27,7 @@ class Cluster:
         log_dir: Path,
         port: int = 0,
         heartbeat_interval: float = 0.2,
-        heartbeat_timeout: float = 1.5,
+        heartbeat_timeout: float = 3.0,
     ):
         self.shared_root = shared_root
         self.log_dir = log_dir
@@ -79,6 +79,14 @@ class Cluster:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
         process.wait()
+
+    def pause_worker(self, index: int) -> None:
+        """Freeze a worker and everything it started. It is not dead: it
+        carries on from where it was when resumed."""
+        os.killpg(self._workers[index].pid, signal.SIGSTOP)
+
+    def resume_worker(self, index: int) -> None:
+        os.killpg(self._workers[index].pid, signal.SIGCONT)
 
     def submit(self, job_file, input_path: str, output_path: str, maps: int, reduces: int) -> str:
         request = pb.SubmitJobRequest(

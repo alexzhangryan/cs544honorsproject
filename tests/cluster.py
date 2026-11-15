@@ -21,11 +21,19 @@ from mapreduce.storage import events_path
 
 
 class Cluster:
-    def __init__(self, shared_root: Path, log_dir: Path, port: int = 0, heartbeat_interval: float = 0.2):
+    def __init__(
+        self,
+        shared_root: Path,
+        log_dir: Path,
+        port: int = 0,
+        heartbeat_interval: float = 0.2,
+        heartbeat_timeout: float = 1.5,
+    ):
         self.shared_root = shared_root
         self.log_dir = log_dir
         self.port = port
         self.heartbeat_interval = heartbeat_interval
+        self.heartbeat_timeout = heartbeat_timeout
         self.boss = None
         self.stub = None
         self._channel = None
@@ -33,7 +41,13 @@ class Cluster:
         log_dir.mkdir(parents=True, exist_ok=True)
 
     def start_boss(self) -> None:
-        self.boss = start_boss(self.shared_root, host="127.0.0.1", port=self.port)
+        self.boss = start_boss(
+            self.shared_root,
+            host="127.0.0.1",
+            port=self.port,
+            heartbeat_timeout=self.heartbeat_timeout,
+            monitor_interval=0.1,
+        )
         self.port = self.boss.port
         self._channel = grpc.insecure_channel(f"127.0.0.1:{self.port}")
         self.stub = pb_grpc.BossStub(self._channel)
@@ -88,6 +102,28 @@ class Cluster:
                 return status
             time.sleep(0.05)
         raise TimeoutError(f"{job_id} still running after {timeout}s\n{self.worker_logs()}")
+
+    def workers(self) -> dict:
+        """What the boss knows about each worker, by worker id."""
+        reply = self.stub.ListWorkers(pb.ListWorkersRequest())
+        return {worker.worker_id: worker for worker in reply.workers}
+
+    def wait_until(self, condition, what: str, timeout: float = 15) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if condition():
+                return
+            time.sleep(0.01)
+        raise TimeoutError(f"timed out waiting until {what}\n{self.worker_logs()}")
+
+    def wait_until_busy(self, *indexes: int) -> None:
+        """Wait until each of the given workers is in the middle of a task."""
+
+        def all_busy():
+            workers = self.workers()
+            return all(f"w{i}" in workers and workers[f"w{i}"].current_task for i in indexes)
+
+        self.wait_until(all_busy, f"workers {indexes} are busy")
 
     def events(self, job_id: str) -> list:
         lines = events_path(self.shared_root, job_id).read_text().splitlines()

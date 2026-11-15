@@ -90,10 +90,7 @@ class BossServicer(pb_grpc.BossServicer):
                     f"running job {running_id}"
                 )
 
-        try:
-            ast.parse(request.job_source)
-        except SyntaxError as error:
-            raise ValueError(f"the job file has a syntax error on line {error.lineno}: {error.msg}")
+        check_job_source(request.job_source)
 
         job_id = time.strftime("job-%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         intermediate_dir(self._shared_root, job_id).mkdir(parents=True)
@@ -173,9 +170,62 @@ class BossServicer(pb_grpc.BossServicer):
             if status.state == SUCCEEDED:
                 # The intermediate files have done their job.
                 shutil.rmtree(intermediate_dir(self._shared_root, request.job_id), ignore_errors=True)
-            if status.state != "RUNNING":
-                log.info("job %s %s after %.1fs", status.job_id, status.state, status.elapsed)
         return pb.ReportTaskReply(accepted=accepted)
+
+
+class _ModuleNames(ast.NodeVisitor):
+    """Collects the names a module defines at its top level, including
+    inside if/try/with blocks but not inside functions or classes."""
+
+    def __init__(self):
+        self.names = set()
+        self.star_import = False
+
+    def visit_FunctionDef(self, node):
+        self.names.add(node.name)  # and do not look inside it
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_ClassDef = visit_FunctionDef
+
+    def visit_Lambda(self, node):
+        pass
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            self.names.add((alias.asname or alias.name).split(".")[0])
+
+    def visit_ImportFrom(self, node):
+        for alias in node.names:
+            if alias.name == "*":
+                self.star_import = True
+            else:
+                self.names.add(alias.asname or alias.name)
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+
+def check_job_source(source: str) -> None:
+    """Reject a job file that can be seen to be unusable without running it.
+
+    Raises ValueError with a one-line message. The file is not executed here:
+    workers do that, and report anything that only shows up at run time.
+    """
+    try:
+        tree = ast.parse(source)
+        compile(tree, "job.py", "exec")  # catches more, such as 'return' outside a function
+    except SyntaxError as error:
+        raise ValueError(f"the job file has a syntax error on line {error.lineno}: {error.msg}")
+    except ValueError:
+        raise ValueError("the job file is not valid Python source")
+
+    names = _ModuleNames()
+    names.visit(tree)
+    if not names.star_import:  # "from x import *" could define anything
+        for required in ("map_fn", "reduce_fn"):
+            if required not in names.names:
+                raise ValueError(f"the job file does not define {required}")
 
 
 def event_writer(shared_root: Path):
@@ -250,6 +300,10 @@ def main() -> None:
                         help="seconds of silence after which a worker is presumed dead "
                              "(default: $MR_HEARTBEAT_TIMEOUT or 5)")
     args = parser.parse_args()
+    if args.heartbeat_timeout < 2:
+        # Workers send a heartbeat every second. With a shorter timeout every
+        # busy worker would look dead.
+        parser.error("--heartbeat-timeout must be at least 2 seconds")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     handle = start_boss(Path(args.shared), port=args.port, heartbeat_timeout=args.heartbeat_timeout)

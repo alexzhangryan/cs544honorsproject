@@ -89,15 +89,23 @@ def test_user_exception_fails_job_and_workers_survive(cluster, shared_root, tmp_
     assert good.state == "SUCCEEDED", good.error
 
 
-def test_missing_reduce_fn_fails_job(cluster, shared_root, tmp_path):
+def test_job_file_that_breaks_when_loaded_fails_job(cluster, shared_root, tmp_path):
     write_input(shared_root, TEXTS)
-    only_map = write_job(tmp_path, "only_map.py", "def map_fn(key, value):\n    yield value, 1\n")
+    broken = write_job(
+        tmp_path,
+        "broken.py",
+        "import no_such_module\n"
+        "def map_fn(key, value):\n"
+        "    yield value, 1\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
     cluster.start_workers(1)
 
-    status = cluster.wait(cluster.submit(only_map, "input/books", "output/x", maps=1, reduces=1))
+    status = cluster.wait(cluster.submit(broken, "input/books", "output/x", maps=1, reduces=1))
 
     assert status.state == "FAILED"
-    assert "reduce_fn" in status.error
+    assert "no_such_module" in status.error
 
 
 def test_task_process_dying_is_reported(cluster, shared_root, tmp_path):

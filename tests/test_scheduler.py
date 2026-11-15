@@ -345,3 +345,17 @@ def test_stale_report_does_not_disown_the_workers_current_task():
     third = scheduler.get_task("w2")
     assert third is not None, "the task was orphaned: nobody will ever run it"
     assert (third.task_id, third.attempt) == (first.task_id, 3)
+
+
+def test_every_job_ending_is_logged(caplog):
+    caplog.set_level("INFO", logger="boss")
+    scheduler, clock = make(num_map=1, num_reduce=1)
+    run_to_completion(scheduler)
+    assert "job job-1 SUCCEEDED" in caplog.text
+
+    scheduler.add_job("job-2", "in", "out2", splits(1), 1)
+    for worker in ("w1", "w2", "w3"):
+        scheduler.get_task(worker)
+        clock.advance(6)
+        scheduler.check_workers()
+    assert "job job-2 FAILED" in caplog.text  # failed by the three-loss limit, with no report involved

@@ -89,6 +89,9 @@ def test_submit_and_run_to_success(stub, shared_root):
         ({"input_path": "input/emptydir"}, "no input files"),
         ({"output_path": "output/taken"}, "already exists"),
         ({"job_source": "def map_fn(:\n"}, "syntax error"),
+        ({"job_source": "return 1\n"}, "syntax error"),
+        ({"job_source": "def map_fn(key, value):\n    yield value, 1\n"}, "reduce_fn"),
+        ({"job_source": "def reduce_fn(key, values):\n    yield key, 1\n"}, "map_fn"),
     ],
 )
 def test_submit_rejects_bad_requests(stub, shared_root, overrides, message):
@@ -215,3 +218,39 @@ def test_watch_workers_keeps_going_after_an_error():
     thread.join(timeout=5)
 
     assert scheduler.calls >= 3, "the watcher stopped after one failed check"
+
+
+def test_submit_accepts_functions_defined_by_assignment(stub, shared_root):
+    write_input(shared_root, TEXTS)
+    source = (
+        "def count(key, values):\n"
+        "    yield key, sum(values)\n"
+        "def words(key, value):\n"
+        "    for word in value.split():\n"
+        "        yield word.lower(), 1\n"
+        "map_fn = words\n"
+        "reduce_fn = count\n"
+    )
+
+    job_id = stub.SubmitJob(wordcount_request(job_source=source)).job_id
+    work_until_idle(stub, shared_root)
+
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).state == "SUCCEEDED"
+    assert read_output(shared_root, "output/wc") == reference_wordcount(TEXTS)
+
+
+def test_boss_refuses_a_heartbeat_timeout_shorter_than_two_heartbeats(shared_root):
+    import subprocess
+    import sys
+
+    from helpers import REPO
+
+    result = subprocess.run(
+        [sys.executable, "-m", "mapreduce.boss", "--shared", str(shared_root), "--port", "0",
+         "--heartbeat-timeout", "1"],
+        cwd=REPO, capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "--heartbeat-timeout must be at least 2" in result.stderr
+    assert "Traceback" not in result.stderr

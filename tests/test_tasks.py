@@ -18,7 +18,8 @@ from helpers import (
     write_input,
 )
 from mapreduce.splits import list_input_files, make_splits
-from mapreduce.tasks import JobError, intermediate_dir, load_job, partition, run_task
+from mapreduce.storage import intermediate_dir
+from mapreduce.tasks import JobError, load_job, partition, run_task
 
 
 def job_file(tmp_path, source: str):

@@ -9,8 +9,9 @@ import pytest
 from helpers import TEXTS, WORDCOUNT, as_task, read_output, reference_wordcount, write_input
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
-from mapreduce.boss import resolve_inside, start_boss
-from mapreduce.tasks import intermediate_dir, job_dir, job_source_path, run_task
+from mapreduce.boss import start_boss
+from mapreduce.storage import events_path, intermediate_dir, job_source_path, resolve_inside
+from mapreduce.tasks import run_task
 
 
 @pytest.fixture
@@ -137,7 +138,7 @@ def test_failed_report_fails_job(stub, shared_root):
 def test_events_file_written(stub, shared_root):
     write_input(shared_root, TEXTS)
     job_id = stub.SubmitJob(wordcount_request()).job_id
-    events_file = job_dir(shared_root, job_id) / "events.jsonl"
+    events_file = events_path(shared_root, job_id)
     assert [json.loads(line)["event"] for line in events_file.read_text().splitlines()] == ["submitted"]
 
     work_until_idle(stub, shared_root)

@@ -26,27 +26,12 @@ from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
 from mapreduce.scheduler import SUCCEEDED, Scheduler
 from mapreduce.splits import list_input_files, make_splits
-from mapreduce.tasks import intermediate_dir, job_dir, job_source_path
+from mapreduce.storage import events_path, intermediate_dir, job_source_path, resolve_inside
 
 log = logging.getLogger("boss")
 
 KIND_TO_PROTO = {"map": pb.MAP, "reduce": pb.REDUCE}
 PROTO_TO_KIND = {pb.MAP: "map", pb.REDUCE: "reduce"}
-
-
-def resolve_inside(shared_root: Path, rel: str) -> Path:
-    """Turn a path relative to shared storage into a real path.
-
-    Raises ValueError if the path is absolute, empty, or leads outside
-    shared storage.
-    """
-    if not rel or Path(rel).is_absolute():
-        raise ValueError(f"path must be relative to shared storage: {rel!r}")
-    root = shared_root.resolve()
-    full = (root / rel).resolve()
-    if root not in full.parents:
-        raise ValueError(f"path must stay inside shared storage: {rel!r}")
-    return full
 
 
 class BossServicer(pb_grpc.BossServicer):
@@ -173,7 +158,7 @@ def event_writer(shared_root: Path):
     """Return a function that appends a job's scheduling events to its events.jsonl."""
 
     def write(job_id: str, event: dict) -> None:
-        with open(job_dir(shared_root, job_id) / "events.jsonl", "a", encoding="utf-8") as f:
+        with open(events_path(shared_root, job_id), "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
 
     return write

@@ -283,3 +283,27 @@ def test_combine_fn_must_be_a_function(tmp_path):
 
     with pytest.raises(JobError, match="combine_fn"):
         load_job(bad)
+
+
+def test_combiner_that_is_not_the_same_function_as_the_reducer(shared_root, tmp_path, monkeypatch):
+    """An average: the combiner passes on a sum and a count, and only the
+    reducer divides. Reusing the reducer as the combiner would be wrong."""
+    from mapreduce import tasks
+
+    monkeypatch.setattr(tasks, "COMBINE_BATCH", 2)  # so a key is combined in several batches
+    write_input(shared_root, {"input/a.txt": "aa\nbbbb\ncccccc\n", "input/b.txt": "d\nddd\n"})
+    average_line_length = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    yield key, [len(value), 1]\n"
+        "def combine_fn(key, values):\n"
+        "    values = list(values)\n"
+        "    yield key, [sum(v[0] for v in values), sum(v[1] for v in values)]\n"
+        "def reduce_fn(key, values):\n"
+        "    values = list(values)\n"
+        "    yield key, sum(v[0] for v in values) / sum(v[1] for v in values)\n",
+    )
+
+    run_job_locally(shared_root, average_line_length, "input", "output/x", num_map=2, num_reduce=2)
+
+    assert read_output(shared_root, "output/x") == {"input/a.txt": "4.0", "input/b.txt": "2.0"}

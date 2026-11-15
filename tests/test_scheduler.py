@@ -151,6 +151,7 @@ def test_events_recorded():
         "submitted",
         "assigned",
         "completed",
+        "map_phase_done",
         "assigned",
         "completed",
         "job_succeeded",
@@ -359,3 +360,75 @@ def test_every_job_ending_is_logged(caplog):
         clock.advance(6)
         scheduler.check_workers()
     assert "job job-2 FAILED" in caplog.text  # failed by the three-loss limit, with no report involved
+
+
+# Reduce order.
+
+
+def finish_maps(scheduler, worker="w1"):
+    """Complete every map task; return the first reduce assignment."""
+    while True:
+        assignment = scheduler.get_task(worker)
+        if assignment.kind == "reduce":
+            return assignment
+        assert finish(scheduler, worker, assignment)
+
+
+def reduce_order(scheduler, first, worker="w1"):
+    """Complete reduce tasks one at a time and return the order they came in."""
+    order = [first.task_id]
+    assert finish(scheduler, worker, first)
+    while (assignment := scheduler.get_task(worker)) is not None:
+        order.append(assignment.task_id)
+        assert finish(scheduler, worker, assignment)
+    return order
+
+
+def test_reduce_tasks_are_handed_out_largest_first():
+    measured = []
+
+    def sizes(job_id, num_reduce):
+        measured.append((job_id, num_reduce))
+        return [5, 50, 20, 50]
+
+    scheduler, _ = make(num_map=2, num_reduce=4, reduce_sizes=sizes)
+
+    first = finish_maps(scheduler)
+
+    assert reduce_order(scheduler, first) == [1, 3, 2, 0]  # equal sizes keep their numerical order
+    assert measured == [("job-1", 4)]  # measured once, when the map phase ended
+    assert scheduler.job_status("job-1").intermediate_bytes == 125
+
+
+def test_numerical_reduce_order_can_be_asked_for():
+    clock = FakeClock()
+    scheduler = Scheduler(clock=clock, reduce_sizes=lambda job_id, num_reduce: [5, 50, 20])
+    scheduler.add_job("job-1", "in", "out", splits(1), 3, reduce_order="numerical")
+
+    first = finish_maps(scheduler)
+
+    assert reduce_order(scheduler, first) == [0, 1, 2]
+    assert scheduler.job_status("job-1").intermediate_bytes == 75  # still measured
+
+
+def test_failed_size_measurement_falls_back_to_numerical_order():
+    def broken(job_id, num_reduce):
+        raise OSError("cannot list the directory")
+
+    scheduler, _ = make(num_map=1, num_reduce=3, reduce_sizes=broken)
+
+    first = finish_maps(scheduler)
+
+    assert reduce_order(scheduler, first) == [0, 1, 2]
+    assert scheduler.job_status("job-1").state == "SUCCEEDED"
+
+
+def test_lost_large_reduce_task_goes_back_to_the_front():
+    scheduler, clock = make(num_map=1, num_reduce=3, reduce_sizes=lambda job_id, num_reduce: [5, 50, 20])
+    big = finish_maps(scheduler, "w1")  # w1 now holds reduce 1, the largest
+    assert big.task_id == 1
+
+    clock.advance(6)
+    scheduler.check_workers()  # w1 is dead; reduce 1 is back in the queue
+
+    assert scheduler.get_task("w2").task_id == 1  # before the smaller ones that were never started

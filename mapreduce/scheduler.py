@@ -54,6 +54,7 @@ class JobStatus:
     elapsed: float
     requeues: int
     output_path: str
+    intermediate_bytes: int = 0  # size of the map output; 0 until the map phase ends
 
 
 @dataclass
@@ -73,6 +74,7 @@ class _Task:
     worker: Optional[str] = None
     attempt: int = 0  # goes up each time the task is handed out
     losses: int = 0  # how many times a worker died while running it
+    size: int = 0  # bytes of input (for a reduce task, known once the map phase ends)
 
 
 @dataclass
@@ -97,6 +99,9 @@ class _Job:
     finished_at: Optional[float] = None
     requeues: int = 0
     events: list[dict] = field(default_factory=list)
+    largest_first: bool = True  # hand out reduce tasks by input size, not by number
+    reduce_order: list[int] = field(default_factory=list)  # indexes into reduces
+    intermediate_bytes: int = 0
 
     def task(self, kind: str, task_id: int) -> Optional[_Task]:
         tasks = {"map": self.maps, "reduce": self.reduces}.get(kind)
@@ -112,15 +117,20 @@ class Scheduler:
         max_losses: int = 3,
         clock: Callable[[], float] = time.monotonic,
         on_event: Optional[Callable[[str, dict], None]] = None,
+        reduce_sizes: Optional[Callable[[str, int], list[int]]] = None,
     ):
         """
         heartbeat_timeout: seconds of silence after which a worker is dead.
         max_losses: a task that loses its worker this many times fails its job.
+        reduce_sizes: called with (job id, number of reduce tasks) when a
+            job's map phase ends; returns the bytes of input of each reduce
+            task. Without it, reduce tasks are handed out in numerical order.
         """
         self._heartbeat_timeout = heartbeat_timeout
         self._max_losses = max_losses
         self._clock = clock
         self._on_event = on_event
+        self._reduce_sizes = reduce_sizes
         self._lock = threading.Lock()
         self._jobs: dict[str, _Job] = {}  # in submission order
         self._workers: dict[str, _Worker] = {}
@@ -132,16 +142,25 @@ class Scheduler:
         output_path: str,
         splits: list[list[Chunk]],
         num_reduce: int,
+        reduce_order: str = "largest_first",
     ) -> None:
-        """Register a job with one map task per split."""
+        """Register a job with one map task per split.
+
+        reduce_order is "largest_first" or "numerical".
+        """
         with self._lock:
             job = _Job(
                 job_id=job_id,
                 input_path=input_path,
                 output_path=output_path,
-                maps=[_Task("map", i, chunks) for i, chunks in enumerate(splits)],
+                maps=[
+                    _Task("map", i, chunks, size=sum(chunk.end - chunk.start for chunk in chunks))
+                    for i, chunks in enumerate(splits)
+                ],
                 reduces=[_Task("reduce", i) for i in range(num_reduce)],
                 submitted_at=self._clock(),
+                largest_first=reduce_order != "numerical",
+                reduce_order=list(range(num_reduce)),
             )
             self._jobs[job_id] = job
             self._event(job, "submitted")
@@ -217,6 +236,8 @@ class Scheduler:
             if success:
                 task.state = COMPLETED
                 self._event(job, "completed", task)
+                if kind == "map" and all(other.state == COMPLETED for other in job.maps):
+                    self._start_reduce_phase(job)
                 if all(reduce.state == COMPLETED for reduce in job.reduces):
                     self._finish(job, SUCCEEDED)
             else:
@@ -281,6 +302,7 @@ class Scheduler:
                 elapsed=end - job.submitted_at,
                 requeues=job.requeues,
                 output_path=job.output_path,
+                intermediate_bytes=job.intermediate_bytes,
             )
 
     def running_outputs(self) -> list[tuple[str, str]]:
@@ -350,10 +372,35 @@ class Scheduler:
                 return task
         if any(task.state != COMPLETED for task in job.maps):
             return None  # reduce tasks must wait for every map task
-        for task in job.reduces:
-            if task.state == IDLE:
-                return task
+        for index in job.reduce_order:
+            if job.reduces[index].state == IDLE:
+                return job.reduces[index]
         return None
+
+    def _start_reduce_phase(self, job: _Job) -> None:
+        """The last map task has just completed. Find out how much input each
+        reduce task has, and decide the order to hand them out in.
+
+        The largest goes first. A job has to wait for its longest reduce
+        task whatever happens, so that one should start as early as possible.
+        """
+        sizes = None
+        if self._reduce_sizes is not None:
+            try:
+                sizes = list(self._reduce_sizes(job.job_id, len(job.reduces)))
+            except Exception as error:
+                log.error("could not measure the reduce inputs of job %s: %s", job.job_id, error)
+        if sizes is None or len(sizes) != len(job.reduces):
+            self._event(job, "map_phase_done")
+            return  # carry on in numerical order
+
+        for task, size in zip(job.reduces, sizes):
+            task.size = size
+        job.intermediate_bytes = sum(sizes)
+        if job.largest_first:
+            # Sorting is stable, so tasks of equal size keep their numerical order.
+            job.reduce_order = sorted(range(len(sizes)), key=lambda index: -sizes[index])
+        self._event(job, "map_phase_done", reduce_sizes=sizes)
 
     def _finish(self, job: _Job, state: str, error: str = "") -> None:
         job.state = state
@@ -367,10 +414,11 @@ class Scheduler:
             reason = (error.strip().splitlines() or ["unknown error"])[-1]
             log.warning("job %s FAILED after %.1fs: %s", job.job_id, elapsed, reason)
 
-    def _event(self, job: _Job, name: str, task: Optional[_Task] = None) -> None:
+    def _event(self, job: _Job, name: str, task: Optional[_Task] = None, **details) -> None:
         event = {"t": round(self._clock() - job.submitted_at, 3), "event": name}
         if task is not None:
             event.update(kind=task.kind, task=task.task_id, attempt=task.attempt, worker=task.worker)
+        event.update(details)
         job.events.append(event)
         if self._on_event is not None:
             try:

@@ -35,6 +35,9 @@ message SubmitJobRequest {
   string job_source = 3;    // source of the file defining map_fn and reduce_fn
   int32 num_map = 4;
   int32 num_reduce = 5;
+  // "largest_first" (the default when empty): reduce tasks with the most
+  // input are handed out first. "numerical": in order of task number.
+  string reduce_order = 6;
 }
 
 message SubmitJobReply {
@@ -56,6 +59,7 @@ message JobStatusReply {
   double elapsed_seconds = 8;   // from submission to now, or to the end
   int32 requeues = 9;           // tasks re-queued after a worker failure
   string output_path = 10;
+  int64 intermediate_bytes = 11;  // size of the map output; 0 until the map phase ends
 }
 
 message ListWorkersRequest {}

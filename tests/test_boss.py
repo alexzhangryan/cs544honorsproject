@@ -307,3 +307,68 @@ def test_check_job_source_rejects(source, message):
     assert message in str(error.value)
     assert "None" not in str(error.value)
     assert "\n" not in str(error.value)
+
+# Reduce order and intermediate data size.
+
+
+def lopsided_input(shared_root):
+    """Input where one word is far more common than the rest."""
+    write_input(shared_root, {"input/books/one.txt": "common " * 500 + "\nrare other words here\n"})
+
+
+def work_through_map_phase(stub, shared_root, worker_id="w1"):
+    """Run map tasks until the boss hands out a reduce task, and return that."""
+    while True:
+        assignment = stub.GetTask(pb.GetTaskRequest(worker_id=worker_id))
+        if assignment.kind == pb.REDUCE:
+            return assignment
+        run_task(str(shared_root), as_task(assignment, worker_id))
+        stub.ReportTask(
+            pb.ReportTaskRequest(
+                worker_id=worker_id, job_id=assignment.job_id, kind=assignment.kind,
+                task_id=assignment.task_id, attempt=assignment.attempt, success=True,
+            )
+        )
+
+
+def test_largest_reduce_task_is_handed_out_first(stub, shared_root):
+    from mapreduce.tasks import partition
+
+    lopsided_input(shared_root)
+    stub.SubmitJob(wordcount_request(num_map=2, num_reduce=5))
+
+    first_reduce = work_through_map_phase(stub, shared_root)
+
+    assert first_reduce.task_id == partition("common", 5)
+
+
+def test_numerical_reduce_order_on_request(stub, shared_root):
+    from mapreduce.tasks import partition
+
+    lopsided_input(shared_root)
+    assert partition("common", 5) != 0, "pick another word: this one lands in reduce task 0"
+    stub.SubmitJob(wordcount_request(num_map=2, num_reduce=5, reduce_order="numerical"))
+
+    assert work_through_map_phase(stub, shared_root).task_id == 0
+
+
+def test_unknown_reduce_order_is_rejected(stub, shared_root):
+    write_input(shared_root, TEXTS)
+
+    with pytest.raises(grpc.RpcError) as error:
+        stub.SubmitJob(wordcount_request(reduce_order="smallest_first"))
+
+    assert error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert "reduce order" in error.value.details()
+
+
+def test_status_reports_size_of_intermediate_data(stub, shared_root):
+    lopsided_input(shared_root)
+    job_id = stub.SubmitJob(wordcount_request(num_map=2, num_reduce=5)).job_id
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).intermediate_bytes == 0
+
+    work_through_map_phase(stub, shared_root)
+
+    on_disk = sum(f.stat().st_size for f in intermediate_dir(shared_root, job_id).glob("map-*.jsonl"))
+    assert on_disk > 0
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).intermediate_bytes == on_disk

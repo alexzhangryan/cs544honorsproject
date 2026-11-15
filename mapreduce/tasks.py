@@ -28,6 +28,11 @@ from mapreduce.storage import (
 )
 
 
+# Shared storage can be slow per call (it may be a network or virtual file
+# system), so files are read and written in large blocks.
+IO_BUFFER = 1024 * 1024
+
+
 class JobError(Exception):
     """The user's job file cannot be used."""
 
@@ -71,7 +76,7 @@ def run_map(
     files = []
     try:
         for temp in temps:
-            files.append(open(temp, "w", encoding="utf-8"))
+            files.append(open(temp, "w", encoding="utf-8", buffering=IO_BUFFER))
         for chunk in chunks:
             for line in read_lines(shared_root, chunk):
                 for key, value in job.map_fn(chunk.path, line) or ():
@@ -110,7 +115,7 @@ def run_reduce(
     # (key, value) pair and sorting them all.
     values_by_key = defaultdict(list)
     for map_id in range(num_map):
-        with open(intermediate_path(shared_root, job_id, map_id, reduce_id), encoding="utf-8") as f:
+        with open(intermediate_path(shared_root, job_id, map_id, reduce_id), encoding="utf-8", buffering=IO_BUFFER) as f:
             for line in f:
                 key, value = json.loads(line)
                 values_by_key[key].append(value)
@@ -122,7 +127,7 @@ def run_reduce(
     # output. Both are in shared storage, so the rename is still atomic.
     temp = intermediate_dir(shared_root, job_id) / f"reduce-{reduce_id}.out{tmp_suffix}"
     try:
-        with open(temp, "w", encoding="utf-8") as out:
+        with open(temp, "w", encoding="utf-8", buffering=IO_BUFFER) as out:
             for key in sorted(values_by_key):
                 for out_key, out_value in job.reduce_fn(key, iter(values_by_key[key])) or ():
                     out.write(f"{out_key}\t{out_value}\n")

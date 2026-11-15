@@ -1,0 +1,48 @@
+name: mapreduce
+
+# Settings shared by every container: the same image, and the same host
+# directory mounted as shared storage.
+x-common: &common
+  image: mapreduce
+  build: .
+  init: true
+  volumes:
+    - ./shared:/shared
+
+# Each worker may use at most one CPU.
+x-worker: &worker
+  <<: *common
+  command: ["python", "-m", "mapreduce.worker"]
+  cpus: 1
+  depends_on:
+    - boss
+
+services:
+  boss:
+    <<: *common
+    container_name: mr-boss
+    command: ["python", "-m", "mapreduce.boss"]
+    ports:
+      # Only reachable from this machine: the boss runs whatever job code it
+      # is sent, so it should not be exposed to the network.
+      - "127.0.0.1:50051:50051"
+
+  worker-1:
+    <<: *worker
+    container_name: mr-worker-1
+    hostname: worker-1
+
+  worker-2:
+    <<: *worker
+    container_name: mr-worker-2
+    hostname: worker-2
+
+  worker-3:
+    <<: *worker
+    container_name: mr-worker-3
+    hostname: worker-3
+
+  worker-4:
+    <<: *worker
+    container_name: mr-worker-4
+    hostname: worker-4

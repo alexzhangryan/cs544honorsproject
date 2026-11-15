@@ -4,6 +4,7 @@
     python -m mapreduce.client submit --input input/sample --output output/wordcount \\
         --job examples/wordcount.py --maps 8 --reduces 4
     python -m mapreduce.client status <job-id>
+    python -m mapreduce.client workers
 
 Input and output paths are relative to shared storage. Uploading is a plain
 file copy into the shared directory; everything else is a gRPC call to the
@@ -148,6 +149,21 @@ def cmd_status(args, stub) -> int:
     return 0
 
 
+def cmd_workers(args, stub) -> int:
+    workers = stub.ListWorkers(pb.ListWorkersRequest(), timeout=RPC_TIMEOUT).workers
+    if not workers:
+        print("no workers have contacted the boss yet")
+        return 0
+    width = max(len(worker.worker_id) for worker in workers)
+    for worker in workers:
+        if worker.alive:
+            detail = worker.current_task or "idle"
+        else:
+            detail = f"last contact {worker.seconds_since_contact:.1f}s ago"
+        print(f"{worker.worker_id:<{width}}  {'alive' if worker.alive else 'DEAD '}  {detail}")
+    return 0
+
+
 def describe_rpc_error(error: grpc.RpcError, boss: str) -> str:
     code = error.code()
     if code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
@@ -185,6 +201,9 @@ def build_parser() -> argparse.ArgumentParser:
     status_cmd = commands.add_parser("status", help="show the progress of a job")
     status_cmd.add_argument("job_id")
     status_cmd.set_defaults(run=cmd_status)
+
+    workers_cmd = commands.add_parser("workers", help="list the workers and whether each is alive")
+    workers_cmd.set_defaults(run=cmd_workers)
 
     return parser
 

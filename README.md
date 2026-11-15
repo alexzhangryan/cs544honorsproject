@@ -109,6 +109,28 @@ Rules:
 - Both functions should be deterministic. A task can run twice after a
   failure, and both runs must produce the same output.
 
+### Optional: a combiner
+
+A job file can define a third function, `combine_fn`. Each map task then
+collects its own output by key and passes it through `combine_fn` before
+writing it, so far less data goes to the reduce tasks.
+[examples/wordcount_combiner.py](examples/wordcount_combiner.py) is word count
+with this added:
+
+```python
+def combine_fn(key, values):
+    """Runs inside a map task: key is a word, values are the counts that
+    this map task has collected for it so far."""
+    yield key, sum(values)
+```
+
+Submit it like any other job (`--job examples/wordcount_combiner.py`, with a
+new `--output`). The result is the same as without the combiner. On the
+sample data the intermediate data shrinks from 1.1 MB to 34.9 KB.
+
+A combiner is only correct when the reduction can be done in pieces and in
+any order, as with a sum, a count, a maximum or a minimum.
+
 ## 6. Submit the job
 
 ```bash

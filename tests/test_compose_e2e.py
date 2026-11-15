@@ -106,11 +106,11 @@ def test_each_worker_is_limited_to_one_cpu(compose):
 
 
 # Word count that sleeps a little on every line, so that a map task takes
-# about a second and a worker can be killed in the middle of one.
+# a few seconds and a worker can be killed in the middle of one.
 SLOW_WORDCOUNT = (
     "import time\n"
     "def map_fn(key, value):\n"
-    "    time.sleep(0.001)\n"
+    "    time.sleep(0.003)\n"
     "    for word in value.split():\n"
     "        yield word.lower(), 1\n"
     "def reduce_fn(key, values):\n"

@@ -40,6 +40,7 @@ def test_tasks_are_spread_across_workers(cluster, shared_root, tmp_path):
         "    yield key, sum(values)\n",
     )
     cluster.start_workers(4)
+    cluster.wait_until(lambda: len(cluster.workers()) == 4, "all four workers have contacted the boss")
 
     job_id = cluster.submit(slow, "input", "output/slow", maps=4, reduces=1)
     status = cluster.wait(job_id)

@@ -7,12 +7,15 @@ directly and control time.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from mapreduce.splits import Chunk
+
+log = logging.getLogger("boss")
 
 # Task states.
 IDLE = "idle"
@@ -241,6 +244,7 @@ class Scheduler:
                 if worker.alive and now - worker.last_seen > self._heartbeat_timeout:
                     worker.alive = False
                     newly_dead.append(worker.worker_id)
+                    log.warning("worker %s has gone silent and is presumed dead", worker.worker_id)
                     self._lose_task(worker)
             return newly_dead
 
@@ -313,6 +317,10 @@ class Scheduler:
             return  # nothing to recover, for example because the job already failed
 
         self._event(job, "requeued", task)
+        log.warning(
+            "job %s: %s task %d was lost with worker %s and is back in the queue",
+            job_id, kind, task_id, worker.worker_id,
+        )
         task.state = IDLE
         task.worker = None
         task.losses += 1

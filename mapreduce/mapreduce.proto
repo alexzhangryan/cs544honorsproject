@@ -63,7 +63,7 @@ message ListWorkersRequest {}
 message WorkerInfo {
   string worker_id = 1;
   bool alive = 2;
-  string current_task = 3;      // for example "job-...: map 3", or empty
+  string current_task = 3;      // for example "map 3 of job-...", or empty
   double seconds_since_contact = 4;
 }
 
@@ -83,7 +83,7 @@ message TaskAssignment {
   int32 num_map = 5;
   int32 num_reduce = 6;
   repeated Chunk chunks = 7;    // map tasks only
-  string output_path = 8;       // reduce tasks only
+  string output_path = 8;       // the job's output directory
 }
 
 message HeartbeatRequest {

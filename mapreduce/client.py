@@ -181,7 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--boss", default=os.environ.get("MR_BOSS", "localhost:50051"),
                         help="address of the boss (default: $MR_BOSS or localhost:50051)")
     parser.add_argument("--shared", default=os.environ.get("MR_SHARED_DIR", "shared"),
-                        help="shared storage directory on this machine (default: $MR_SHARED_DIR or ./shared)")
+                        help="shared storage directory on this machine "
+                             "(default: $MR_SHARED_DIR or ./shared)")
     commands = parser.add_subparsers(dest="command", required=True)
 
     upload_cmd = commands.add_parser("upload", help="copy a local file or directory into shared storage")

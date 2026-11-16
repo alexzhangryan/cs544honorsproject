@@ -4,6 +4,7 @@
     python -m mapreduce.client submit --input input/sample --output output/wordcount \\
         --job examples/wordcount.py --maps 8 --reduces 4
     python -m mapreduce.client status <job-id>
+    python -m mapreduce.client cancel <job-id>
     python -m mapreduce.client workers
 
 Input and output paths are relative to shared storage. Uploading is a plain
@@ -172,7 +173,8 @@ def cmd_submit(args, stub) -> int:
     try:
         status = wait_for_job(stub, job_id, on_progress=show_progress)
     except KeyboardInterrupt:
-        print(f"\nstopped waiting; the job is still running (check it with: status {job_id})")
+        print(f"\nstopped waiting; the job is still running "
+              f"(check it with: status {job_id}, stop it with: cancel {job_id})")
         return 130
 
     if status.state == "SUCCEEDED":
@@ -182,6 +184,9 @@ def cmd_submit(args, stub) -> int:
             print(f"intermediate data: {format_size(status.intermediate_bytes)}")
         print(f"output: {Path(args.shared) / status.output_path}")
         return 0
+    if status.state == "CANCELLED":
+        print(f"CANCELLED after {status.elapsed_seconds:.1f}s")
+        return 1
     print(f"FAILED after {status.elapsed_seconds:.1f}s")
     print(status.error)
     return 1
@@ -196,6 +201,13 @@ def cmd_status(args, stub) -> int:
         print(f"intermediate data: {format_size(status.intermediate_bytes)}")
     if status.state == "FAILED":
         print(status.error)
+    return 0
+
+
+def cmd_cancel(args, stub) -> int:
+    reply = stub.CancelJob(pb.CancelJobRequest(job_id=args.job_id), timeout=RPC_TIMEOUT)
+    print(f"cancelled {args.job_id}; its workers stop within a few seconds")
+    print(f"any output it wrote is left in {Path(args.shared) / reply.output_path}")
     return 0
 
 
@@ -218,7 +230,7 @@ def describe_rpc_error(error: grpc.RpcError, boss: str) -> str:
     code = error.code()
     if code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
         return f"cannot reach the boss at {boss} (is the cluster running? try: docker compose up -d)"
-    if code in (grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.NOT_FOUND):
+    if code in (grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.NOT_FOUND, grpc.StatusCode.FAILED_PRECONDITION):
         return error.details()
     return f"{code.name}: {error.details()}"
 
@@ -257,6 +269,10 @@ def build_parser() -> argparse.ArgumentParser:
     status_cmd = commands.add_parser("status", help="show the progress of a job")
     status_cmd.add_argument("job_id")
     status_cmd.set_defaults(run=cmd_status)
+
+    cancel_cmd = commands.add_parser("cancel", help="stop a running job")
+    cancel_cmd.add_argument("job_id")
+    cancel_cmd.set_defaults(run=cmd_cancel)
 
     workers_cmd = commands.add_parser("workers", help="list the workers and whether each is alive")
     workers_cmd.set_defaults(run=cmd_workers)

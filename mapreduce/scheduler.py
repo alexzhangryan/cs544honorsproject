@@ -360,6 +360,12 @@ class Scheduler:
         job.error = error
         job.finished_at = self._clock()
         self._event(job, "job_succeeded" if state == SUCCEEDED else "job_failed")
+        elapsed = job.finished_at - job.submitted_at
+        if state == SUCCEEDED:
+            log.info("job %s SUCCEEDED after %.1fs", job.job_id, elapsed)
+        else:
+            reason = (error.strip().splitlines() or ["unknown error"])[-1]
+            log.warning("job %s FAILED after %.1fs: %s", job.job_id, elapsed, reason)
 
     def _event(self, job: _Job, name: str, task: Optional[_Task] = None) -> None:
         event = {"t": round(self._clock() - job.submitted_at, 3), "event": name}

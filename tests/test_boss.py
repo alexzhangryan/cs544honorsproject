@@ -82,6 +82,8 @@ def test_submit_and_run_to_success(stub, shared_root):
     [
         ({"num_map": 0}, "map tasks"),
         ({"num_reduce": 0}, "reduce tasks"),
+        ({"num_map": 10_001}, "map tasks"),
+        ({"num_reduce": 100_000_000}, "reduce tasks"),
         ({"input_path": "/etc/passwd"}, "relative"),
         ({"input_path": "../outside"}, "inside shared storage"),
         ({"output_path": "output/../../outside"}, "inside shared storage"),
@@ -89,6 +91,9 @@ def test_submit_and_run_to_success(stub, shared_root):
         ({"input_path": "input/emptydir"}, "no input files"),
         ({"output_path": "output/taken"}, "already exists"),
         ({"job_source": "def map_fn(:\n"}, "syntax error"),
+        ({"job_source": "return 1\n"}, "syntax error"),
+        ({"job_source": "def map_fn(key, value):\n    yield value, 1\n"}, "reduce_fn"),
+        ({"job_source": "def reduce_fn(key, values):\n    yield key, 1\n"}, "map_fn"),
     ],
 )
 def test_submit_rejects_bad_requests(stub, shared_root, overrides, message):
@@ -215,3 +220,90 @@ def test_watch_workers_keeps_going_after_an_error():
     thread.join(timeout=5)
 
     assert scheduler.calls >= 3, "the watcher stopped after one failed check"
+
+
+def test_submit_accepts_functions_defined_by_assignment(stub, shared_root):
+    write_input(shared_root, TEXTS)
+    source = (
+        "def count(key, values):\n"
+        "    yield key, sum(values)\n"
+        "def words(key, value):\n"
+        "    for word in value.split():\n"
+        "        yield word.lower(), 1\n"
+        "map_fn = words\n"
+        "reduce_fn = count\n"
+    )
+
+    job_id = stub.SubmitJob(wordcount_request(job_source=source)).job_id
+    work_until_idle(stub, shared_root)
+
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).state == "SUCCEEDED"
+    assert read_output(shared_root, "output/wc") == reference_wordcount(TEXTS)
+
+
+def test_boss_refuses_a_heartbeat_timeout_shorter_than_two_heartbeats(shared_root):
+    import subprocess
+    import sys
+
+    from helpers import REPO
+
+    result = subprocess.run(
+        [sys.executable, "-m", "mapreduce.boss", "--shared", str(shared_root), "--port", "0",
+         "--heartbeat-timeout", "1"],
+        cwd=REPO, capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "--heartbeat-timeout must be at least 2" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+# What check_job_source accepts and rejects, without running the file.
+
+FUNCTIONS = "def m(key, value):\n    yield value, 1\ndef r(key, values):\n    yield key, 1\n"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        FUNCTIONS + "map_fn, reduce_fn = m, r\n",
+        "from os import path as map_fn\nimport os as reduce_fn\n",
+        "import sys\nif sys.version_info > (3,):\n    def map_fn(k, v):\n        yield v, 1\n"
+        "try:\n    def reduce_fn(k, vs):\n        yield k, 1\nfinally:\n    pass\n",
+        "from somewhere import *\n",
+        FUNCTIONS + "def install():\n    global map_fn, reduce_fn\n    map_fn, reduce_fn = m, r\ninstall()\n",
+        FUNCTIONS + "globals()['map_fn'] = m\nglobals()['reduce_fn'] = r\n",
+        FUNCTIONS + "exec('map_fn, reduce_fn = m, r')\n",
+        FUNCTIONS + "match (m, r):\n    case (map_fn, reduce_fn):\n        pass\n",
+        # Deeply nested, but fine for the compiler and for the workers.
+        "def map_fn(k, v):\n    yield v, 1\ndef reduce_fn(k, vs):\n    yield k, 1\nx = "
+        + " + ".join(["'a'"] * 600) + "\n",
+    ],
+    ids=["assignment", "imports", "inside-if-and-try", "star-import", "global-statement",
+         "globals-call", "exec-call", "match-capture", "deep-nesting"],
+)
+def test_check_job_source_accepts(source):
+    from mapreduce.boss import check_job_source
+
+    check_job_source(source)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "source, message",
+    [
+        ("def helper():\n    map_fn = 1\n    reduce_fn = 2\n", "map_fn"),
+        ("class Job:\n    def map_fn(self):\n        pass\n    def reduce_fn(self):\n        pass\n", "map_fn"),
+        ("def map_fn(k, v):\n    yield v, 1\nreducer = lambda k, vs: [(k, 1)]\n", "reduce_fn"),
+        ("def map_fn(k, v):\n    yield v, 1\n\x00", "not valid Python"),
+    ],
+    ids=["only-inside-a-function", "only-inside-a-class", "wrong-name", "nul-byte"],
+)
+def test_check_job_source_rejects(source, message):
+    from mapreduce.boss import check_job_source
+
+    with pytest.raises(ValueError) as error:
+        check_job_source(source)
+
+    assert message in str(error.value)
+    assert "None" not in str(error.value)
+    assert "\n" not in str(error.value)

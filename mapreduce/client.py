@@ -23,6 +23,7 @@ from typing import Callable, Optional
 
 import grpc
 
+from mapreduce import MAX_TASKS
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
 from mapreduce.storage import resolve_inside
@@ -32,6 +33,11 @@ RPC_TIMEOUT = 10.0  # seconds to wait for the boss to answer one call
 
 class ClientError(Exception):
     """A problem that is shown to the user as a single line."""
+
+
+def first_line(error: Exception) -> str:
+    """The first line of an error's message (some span several lines)."""
+    return (str(error).splitlines() or [type(error).__name__])[0]
 
 
 def upload(local_path: Path, shared_dir: Path, dest: str) -> Path:
@@ -47,23 +53,35 @@ def upload(local_path: Path, shared_dir: Path, dest: str) -> Path:
         target = resolve_inside(shared_dir, dest)
     except ValueError as error:
         raise ClientError(str(error))
+    source = local_path.resolve()
+    if source == target or source in target.parents:
+        # Copying would descend into its own copy without end.
+        raise ClientError(f"cannot upload {local_path} into itself: it contains shared storage")
 
-    if local_path.is_dir():
-        shutil.copytree(local_path, target, dirs_exist_ok=True)
-    else:
-        if target.is_dir():
-            target = target / local_path.name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(local_path, target)
+    try:
+        if local_path.is_dir():
+            shutil.copytree(local_path, target, dirs_exist_ok=True)
+        else:
+            if target.is_dir():
+                target = target / local_path.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(local_path, target)
+    except OSError as error:
+        raise ClientError(f"cannot copy {local_path} into shared storage: {first_line(error)}")
     return target
 
 
 def submit_job(stub, input_path: str, output_path: str, job_file: Path, maps: int, reduces: int) -> str:
     """Send a job to the boss and return its id."""
+    for option, count in (("--maps", maps), ("--reduces", reduces)):
+        if not 1 <= count <= MAX_TASKS:
+            raise ClientError(f"{option} must be between 1 and {MAX_TASKS}")
     try:
         source = Path(job_file).read_text(encoding="utf-8")
     except FileNotFoundError:
         raise ClientError(f"job file not found: {job_file}")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ClientError(f"cannot read the job file {job_file}: {first_line(error)}")
     request = pb.SubmitJobRequest(
         input_path=input_path,
         output_path=output_path,

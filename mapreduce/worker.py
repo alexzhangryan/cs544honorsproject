@@ -30,6 +30,7 @@ log = logging.getLogger("worker")
 KIND_NAMES = {pb.MAP: "map", pb.REDUCE: "reduce"}
 RPC_TIMEOUT = 5.0  # seconds to wait for the boss to answer one call
 RETRY_INTERVAL = 1.0  # seconds between attempts while the boss is unreachable
+REPORT_ATTEMPTS = 3  # how many times to try to deliver a task's result
 
 # Without these, gRPC waits longer and longer (up to two minutes) between
 # attempts to reconnect, so a worker started before the boss would be slow
@@ -142,10 +143,19 @@ class Worker:
             success=error is None,
             error=error or "",
         )
-        try:
-            self._stub.ReportTask(request, timeout=RPC_TIMEOUT)
-        except grpc.RpcError as rpc_error:
-            log.warning("could not report to the boss (%s)", rpc_error.code().name)
+        # A finished task whose report is lost has to be run again, so one
+        # failed call is not enough reason to give up.
+        for attempt in range(1, REPORT_ATTEMPTS + 1):
+            try:
+                self._stub.ReportTask(request, timeout=RPC_TIMEOUT)
+                return
+            except grpc.RpcError as rpc_error:
+                log.warning(
+                    "could not report to the boss (%s), try %d of %d",
+                    rpc_error.code().name, attempt, REPORT_ATTEMPTS,
+                )
+                if attempt < REPORT_ATTEMPTS:
+                    time.sleep(RETRY_INTERVAL)
 
 
 def main() -> None:

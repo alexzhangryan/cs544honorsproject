@@ -9,9 +9,14 @@ run as containers under Docker Compose, and each worker is limited to one CPU.
 A command-line client on the host uploads data, submits jobs and checks
 progress.
 
-The special feature is **worker failure handling**. If a worker dies in the
-middle of a job, the boss notices, re-runs the lost task on another worker, and
-the job finishes with the same output a failure-free run would have produced.
+The main special feature is **worker failure handling**. If a worker dies in
+the middle of a job, the boss notices, re-runs the lost task on another worker,
+and the job finishes with the same output a failure-free run would have
+produced.
+
+Three smaller features were added afterwards and are described in section 10:
+**combiners**, handing out the **largest reduce task first**, and **backup
+tasks for stragglers**.
 
 ## 2. Goals and non-goals
 
@@ -24,6 +29,9 @@ the job finishes with the same output a failure-free run would have produced.
 - Survive the loss of workers during a job, as long as at least one worker is
   alive or comes back.
 - Be easy to try: Docker, Python and one `pip install`.
+- Save work and waiting where that is cheap: combine map output before
+  writing it, start the largest reduce task first, and duplicate a task that
+  is stuck on a slow worker.
 
 **Non-goals**
 
@@ -32,7 +40,7 @@ the job finishes with the same output a failure-free run would have produced.
 - More than one VM, or a distributed file system.
 - Reduce partitions that do not fit in a worker's memory (reduce groups its
   input in memory).
-- Combiners, backup tasks for stragglers, and data locality.
+- Data locality.
 - Sandboxing user code, and authentication.
 
 **Must never happen**
@@ -118,6 +126,11 @@ python -m mapreduce.client submit \
 directory already exists and is not empty, or is being written by a job that
 is still running.
 
+Two more options switch off a scheduling feature for one job:
+`--no-backup-tasks` and `--reduce-order numerical` (section 10). They exist
+so that the performance evaluation can compare a job with and without the
+feature.
+
 **Check on things**
 
 ```
@@ -147,6 +160,9 @@ Rules for job files:
 - Both functions should be deterministic, because a task may run more than
   once after a failure.
 
+A job file can also define a third function, `combine_fn`, described in
+section 10.
+
 ## 5. Language
 
 Everything is Python: boss, workers, client, tests and benchmark scripts. The
@@ -160,10 +176,10 @@ service:
 | Caller | RPC | Purpose |
 |--------|-----|---------|
 | client | `SubmitJob` | send paths, job file source, M and R; returns a job id |
-| client | `GetJobStatus` | state, tasks done out of total, error text, elapsed time |
+| client | `GetJobStatus` | state, tasks done out of total, error text, elapsed time, size of the intermediate data |
 | client | `ListWorkers` | each worker's id and whether it is alive |
 | worker | `GetTask` | ask for the next task; the reply is a map task, a reduce task, or "nothing right now" |
-| worker | `Heartbeat` | "I am still alive", sent while a task is running |
+| worker | `Heartbeat` | "I am still alive", sent while a task is running; the reply can tell the worker to stop the task |
 | worker | `ReportTask` | task finished, or failed with an error message |
 
 Workers pull work instead of the boss pushing it. This keeps one server in the
@@ -268,7 +284,140 @@ still alive, so it reports the task as failed.
 A was chosen because it is the simplest design that detects failures
 quickly, independent of how long tasks take.
 
-## 10. Tests
+## 10. Additional features
+
+### 10.1 Combiners
+
+A job file can define an optional third function:
+
+```python
+def combine_fn(key, values):
+    # same shape as reduce_fn: one key, all the values this map task has for it
+    yield key, sum(values)
+```
+
+If it is there, a map task does not write every pair that `map_fn` yields.
+It collects the pairs by key in memory, calls `combine_fn` once per key, and
+writes what that yields. For word count, a map task then writes one pair per
+distinct word instead of one pair per word occurrence.
+
+- To bound memory, the map task combines and writes out what it has collected
+  every 100,000 pairs. A key can therefore be combined in several batches.
+- The job's final result must be the same whether the combiner runs or not,
+  and however its input is batched. Two things are needed for that. What
+  `combine_fn` yields must be valid input for `reduce_fn`. And reducing
+  combined pieces must give the same result as reducing the raw values.
+- For a sum, a maximum or a minimum, `combine_fn` can do exactly what
+  `reduce_fn` does. That is not true of every reduction. A reducer that
+  counts its values cannot be reused as the combiner: it would count the
+  batches. The count has to be emitted as 1 by `map_fn` and summed by both.
+  An average needs a combiner that passes on a sum and a count.
+- Keys that `combine_fn` yields must be strings. Each pair is assigned to a
+  reduce task by the key the combiner yields.
+
+The combiner runs inside the map task, not as a separate step, so no file is
+read or written twice.
+
+### 10.2 Largest reduce task first
+
+The first performance evaluation found a weakness. Reduce tasks were handed
+out in numerical order, and the one with the most input happened to be
+started in the second round. The job then waited for it alone at the end.
+
+Now, when the last map task of a job completes, the boss adds up the size of
+the intermediate files of each reduce task and hands the reduce tasks out
+from largest to smallest. The largest task starts first, and smaller ones
+fill in around it.
+
+The sizes are measured in the same step that records the last map task as
+complete, while the scheduler still holds its lock. No worker can be handed
+a reduce task before the order is known.
+
+- The cost is one size lookup per intermediate file (M times R of them), once
+  per job.
+- The sizes also give the total amount of intermediate data, which `status`
+  now reports. The combiner experiment uses this number.
+- `--reduce-order numerical` restores the old order for one job.
+
+### 10.3 Backup tasks for stragglers
+
+A slow worker holds up a whole job at the end of each phase, because the job
+has to wait for that worker's last task. A worker can be slow without being
+dead: an overloaded machine, a failing disk, a throttled CPU.
+
+**Rule.** When a worker asks for work and no job has an idle task to give it,
+the boss looks for a task that is running unusually slowly on a worker that
+is alive, and hands the asking worker a second copy of it, a backup.
+Whichever copy succeeds first completes the task. The other copy is
+cancelled (section 10.4).
+
+**What counts as slow.** The boss knows the input size of every task: bytes
+of input text for a map task, bytes of intermediate data for a reduce task.
+It also knows how long each completed task took. From the completed tasks of
+the same kind in the job it takes the median speed, in seconds per byte. A
+running task is a straggler when it has already run 1.5 times longer than a
+task of its size would take at that speed.
+
+- At least three tasks of that kind, with some input, must have completed,
+  so there is something to compare with. Tasks with no input are left out of
+  the median: they have no speed.
+- The task must also be at least one second later than expected. A fixed
+  amount of time goes into starting any task, and for a very small task that
+  is most of its running time.
+- The task's worker must have been heard from recently (within 40% of the
+  heartbeat timeout, which is 2 seconds by default). Backups are for workers
+  that are alive but slow. A worker that has gone silent is probably dead,
+  and its task is recovered by the timeout as before (section 9). This keeps
+  the two mechanisms apart.
+- A task gets at most one backup each time it is handed out, and never on the
+  worker already running it. A task that is re-queued can get one again.
+
+**Why judge by size.** Reduce tasks differ a lot in size: in the benchmark
+one has 27% of the data. Comparing plain running times would mark that task
+as a straggler in every run and waste a worker on duplicating it.
+
+**Why the output stays correct.** Backups rely on the same three things as
+failure handling. Each copy has its own attempt number and its own temporary
+files. Files are renamed into place only when complete. Both copies produce
+identical files, because job functions are deterministic.
+
+**Reports with two copies running.** A task can now have two live attempts,
+and a report counts only if it comes from a live attempt.
+
+- The first report of success completes the task. A later report for the
+  same task is ignored.
+- A report of failure retires that attempt. If the other copy is still
+  running, the job carries on with it. The job fails only when the last live
+  attempt of a task fails. (With a single copy this is the rule from section
+  9: an error fails the job at once.)
+- If a worker dies while another copy of its task is still running, nothing
+  is re-queued: the surviving copy carries on. The task is re-queued when its
+  last copy is lost.
+- Every lost copy counts toward the three-loss limit of section 9, whether
+  or not it led to a re-queue. Otherwise a task that kills its workers could
+  take two of them per round and never reach the limit.
+
+`--no-backup-tasks` switches backups off for one job.
+
+| Approach | How it works | Trade-off |
+|----------|--------------|-----------|
+| **Slow for its size, when a worker is free (chosen)** | As above. | Needs task sizes, which the boss has anyway. Does not duplicate a task that is merely big. |
+| Duplicate everything still running near the end of a phase | What the original MapReduce paper describes. | Simplest. With uneven reduce tasks it duplicates healthy big tasks in every run. |
+| Fixed time limit per task | Back up any task that runs longer than N seconds. | N would have to be tuned for every job and data size. |
+
+### 10.4 Cancelling work that is no longer needed
+
+The reply to `Heartbeat` can tell a worker that its task is no longer wanted.
+That happens when another copy of the task has finished first, or when the
+job has failed. The worker kills the task's child process and asks for new
+work.
+
+Without this, the loser of a backup race would run to the end for nothing,
+and so would every task still running when a job fails. A cancelled task can
+leave temporary files behind. Like those of a killed worker, they are never
+read, and they are removed with the job's intermediate directory.
+
+## 11. Tests
 
 All tests use pytest. GitHub Actions runs them on every pull request.
 
@@ -301,12 +450,37 @@ All tests use pytest. GitHub Actions runs them on every pull request.
   one.
 - A job whose `map_fn` raises ends as failed with the traceback.
 
+**Tests for the additional features**
+
+- Combiners: the output with a combiner equals the output without one; the
+  intermediate files hold far fewer pairs; a combiner that changes keys is
+  partitioned correctly; batches are combined correctly when the batch limit
+  is tiny; a combiner that is not the same function as the reducer (an
+  average) gives the right result.
+- Reduce order, in the scheduler with a fake clock: reduce tasks come out
+  largest first; the numerical option still works.
+- Backup tasks, in the scheduler with a fake clock: no backup while an idle
+  task exists; only a task that is slow for its size gets one; not a task
+  whose worker has gone silent; not an empty task that has only just
+  started; never two; the first success completes the task and the second
+  is ignored; a failure of one copy leaves the job running, and failure of
+  both fails it; a worker dying while the other copy runs does not re-queue
+  the task; lost copies count toward the three-loss limit; the heartbeat
+  reply tells the loser to stop.
+- Backup tasks with real worker processes: one worker is made slow; the job
+  finishes sooner than the slow worker could manage, with correct output, and
+  the slow worker's copy is cancelled.
+- Cancelling: when a job fails, tasks still running on other workers are
+  stopped.
+
 **End-to-end test** (real Docker Compose cluster)
 
 - Bring the cluster up, upload the sample data, submit word count,
   `docker kill` a worker mid-job, and check the output against the reference.
+- Slow one worker container down with a CPU limit and check that a backup
+  task ran and the output is correct.
 
-## 11. Performance evaluation
+## 12. Performance evaluation
 
 Everything is measured on the real Compose cluster on one machine. The
 workload is word count over 100 MB of generated text, with M = 16 and R = 8.
@@ -344,7 +518,34 @@ boss's `events.jsonl` and shows directly that the feature works as intended:
 the dead worker's row stops, and its task reappears elsewhere after the
 timeout.
 
-## 12. Implementation notes
+The additional features get one measurement each, on the same workload.
+
+The features affect each other, so each measurement switches the others
+off. With a combiner the benchmark's intermediate data all but disappears,
+which would leave the other two features nothing to work on in the reduce
+phase.
+
+**Plot 4: combiner.** Size of the intermediate data and job time, for word
+count with and without `combine_fn`. Backup tasks are off; reduce order is
+the default.
+
+**Plot 5: reduce order.** Reduce tasks handed out in numerical order and
+largest first, without a combiner and with backup tasks off. The expected
+gain is under two seconds, about the size of the run-to-run variation in job
+time on the test machine. So the comparison is of the length of the reduce
+phase and of the moment the largest reduce task starts, both taken from the
+boss's log, over more runs.
+
+**Plot 6: backup tasks.** One worker is limited to a quarter of a CPU,
+without a combiner. Job time with backup tasks on and off, next to the time
+with four healthy workers, plus a timeline of one run that shows the
+duplicate being started and the slow copy being cancelled.
+
+Plots 2 and 3 describe failure handling by the heartbeat timeout. They are
+unaffected by backup tasks, because a worker that has gone silent is not
+given a backup.
+
+## 13. Implementation notes
 
 - One Docker image serves both boss and workers; the Compose file gives them
   different commands. The four workers are separate services with fixed names

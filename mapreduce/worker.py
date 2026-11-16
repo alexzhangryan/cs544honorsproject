@@ -129,7 +129,7 @@ class Worker:
         sender.close()  # only the child holds the sending end now
         try:
             while not receiver.poll(self.heartbeat_interval):
-                if self._heartbeat():
+                if self._heartbeat(assignment):
                     process.kill()
                     raise TaskCancelled()
             try:
@@ -142,12 +142,18 @@ class Worker:
             process.join()
             receiver.close()
 
-    def _heartbeat(self) -> bool:
-        """Tell the boss we are alive. Returns True if it wants the task stopped."""
+    def _heartbeat(self, assignment) -> bool:
+        """Tell the boss we are alive and which task attempt we are running.
+        Returns True if it wants that attempt stopped."""
+        request = pb.HeartbeatRequest(
+            worker_id=self.worker_id,
+            job_id=assignment.job_id,
+            kind=assignment.kind,
+            task_id=assignment.task_id,
+            attempt=assignment.attempt,
+        )
         try:
-            reply = self._stub.Heartbeat(
-                pb.HeartbeatRequest(worker_id=self.worker_id), timeout=RPC_TIMEOUT
-            )
+            reply = self._stub.Heartbeat(request, timeout=RPC_TIMEOUT)
             return reply.cancel
         except grpc.RpcError:
             return False  # if this keeps failing, the boss will give our task to someone else

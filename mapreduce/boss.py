@@ -162,7 +162,10 @@ class BossServicer(pb_grpc.BossServicer):
         )
 
     def Heartbeat(self, request, context):
-        return pb.HeartbeatReply(cancel=self._scheduler.heartbeat(request.worker_id))
+        running = None
+        if request.job_id:
+            running = (request.job_id, PROTO_TO_KIND.get(request.kind, ""), request.task_id, request.attempt)
+        return pb.HeartbeatReply(cancel=self._scheduler.heartbeat(request.worker_id, running))
 
     def ReportTask(self, request, context):
         accepted = self._scheduler.report(

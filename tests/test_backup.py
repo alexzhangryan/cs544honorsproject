@@ -123,9 +123,53 @@ def test_failed_job_stops_tasks_still_running_on_other_workers(cluster, shared_r
 
     failed = cluster.wait(cluster.submit(doomed, "input/doomed", "output/doomed", maps=2, reduces=1))
     assert failed.state == "FAILED"
+    started = {event["task"] for event in cluster.events(failed.job_id) if event["event"] == "assigned"}
+    assert started == {0, 1}, "the long task was never started, so this test proves nothing"
+    cluster.wait_until(
+        lambda: any("no longer needed" in log.read_text() for log in cluster.log_dir.glob("*.log")),
+        "the worker running the long task has stopped it",
+    )
 
     # If the 30-second task were still running, its worker could take no part in the next job.
     status = cluster.wait(cluster.submit(paced, "input/next", "output/next", maps=6, reduces=1), timeout=20)
     assert status.state == "SUCCEEDED", status.error
     took_part = {event["worker"] for event in cluster.events(status.job_id) if event["event"] == "completed"}
     assert took_part == {"w0", "w1"}
+
+
+# A reduce phase in which one worker is slow: 200 distinct words over 6 reduce
+# tasks, and reduce_fn pauses on every key, ten times longer on the slow worker.
+REDUCE_SLOW_JOB = (
+    "import os, time\n"
+    "PAUSE = 0.1 if os.environ.get('TEST_SLOW_WORKER') else 0.005\n"
+    "def map_fn(key, value):\n"
+    "    for word in value.split():\n"
+    "        yield word, 1\n"
+    "def reduce_fn(key, values):\n"
+    "    time.sleep(PAUSE)\n"
+    "    yield key, sum(values)\n"
+)
+WORDS = [f"k{i}" for i in range(200)]
+
+
+def test_backup_of_a_reduce_task(cluster, shared_root, tmp_path):
+    from mapreduce.storage import intermediate_dir
+
+    write_input(shared_root, {f"input/words/{i}.txt": " ".join(WORDS) + "\n" for i in range(4)})
+    job_file = tmp_path / "reduce_slow.py"
+    job_file.write_text(REDUCE_SLOW_JOB)
+    start_with_one_slow_worker(cluster)
+
+    status = cluster.wait(cluster.submit(job_file, "input/words", "output/words", maps=4, reduces=6))
+
+    assert status.state == "SUCCEEDED", status.error
+    assert read_output(shared_root, "output/words") == {word: "4" for word in WORDS}
+    assert sorted(os.listdir(shared_root / "output/words")) == [f"part-0000{r}.txt" for r in range(6)]
+    events = cluster.events(status.job_id)
+    assert any(event.get("backup") and event["kind"] == "reduce" for event in events)
+    assert any(event["event"] == "cancelled" and event["kind"] == "reduce" for event in events)
+    # The winner's success removed the intermediate files while the loser was
+    # still using them; nothing may be left behind.
+    cluster.wait_until(
+        lambda: not intermediate_dir(shared_root, status.job_id).exists(), "the intermediate files are gone"
+    )

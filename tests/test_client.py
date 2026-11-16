@@ -312,10 +312,22 @@ def test_submit_options_reach_the_boss(tmp_path):
     assert stub.request.no_backup_tasks is True
 
 
-def test_no_backup_tasks_flag(cluster, shared_root, capsys):
-    write_input(shared_root, TEXTS)
-    cluster.start_workers(2)
+def test_submit_command_passes_its_options_on(capsys):
+    from mapreduce.client import cmd_submit
 
-    assert client(cluster, shared_root, *submit_args(), "--no-backup-tasks") == 0
+    class RecordingStub:
+        def SubmitJob(self, request, timeout=None):
+            self.request = request
+            return type("Reply", (), {"job_id": "job-1"})()
 
-    assert "SUCCEEDED" in capsys.readouterr().out
+    def submitted(*options):
+        stub = RecordingStub()
+        args = build_parser().parse_args(["submit", "--input", "in", "--output", "out", "--job", str(WORDCOUNT),
+                                          "--maps", "2", "--reduces", "3", "--no-wait", *options])
+        assert cmd_submit(args, stub) == 0
+        return stub.request
+
+    plain = submitted()
+    assert (plain.no_backup_tasks, plain.reduce_order) == (False, "largest_first")
+    assert submitted("--no-backup-tasks").no_backup_tasks is True
+    assert submitted("--reduce-order", "numerical").reduce_order == "numerical"

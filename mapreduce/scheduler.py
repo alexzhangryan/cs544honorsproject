@@ -274,24 +274,32 @@ class Scheduler:
                 self._finish(job, SUCCEEDED)
             return True
 
-    def heartbeat(self, worker_id: str) -> bool:
+    def heartbeat(self, worker_id: str, running: Optional[tuple[str, str, int, int]] = None) -> bool:
         """Note that this worker is alive.
 
-        Returns True if the worker should stop the task it is running,
-        because nobody needs the result any more: another copy of the task
-        has finished, or the job has failed.
+        running is the attempt the worker says it is running: (job id, kind,
+        task id, attempt). Without it, the boss goes by its own record.
+
+        Returns True if the worker should stop that attempt, because nobody
+        needs the result any more: another copy of the task has finished,
+        the job has failed, or the worker was presumed dead and its task
+        given to another worker. The answer stays True for as long as the
+        worker keeps reporting that attempt, so a lost reply does no harm.
         """
         with self._lock:
             worker = self._contact(worker_id)
-            if worker.task is None:
+            running = running or worker.task
+            if running is None:
                 return False
-            job_id, kind, task_id, attempt = worker.task
-            job = self._jobs[job_id]
-            task = job.task(kind, task_id)
-            if job.state == RUNNING and task.running.get(attempt) == worker_id:
-                return False
-            worker.task = None
-            return True
+            job_id, kind, task_id, attempt = running
+            job = self._jobs.get(job_id)
+            task = job.task(kind, task_id) if job is not None else None
+            return not (
+                job is not None
+                and job.state == RUNNING
+                and task is not None
+                and task.running.get(attempt) == worker_id
+            )
 
     def check_workers(self) -> list[str]:
         """Declare dead every worker that has been silent for too long, and

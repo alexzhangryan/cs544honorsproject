@@ -96,6 +96,11 @@ message TaskAssignment {
 
 message HeartbeatRequest {
   string worker_id = 1;
+  // The task attempt the worker is running.
+  string job_id = 2;
+  TaskKind kind = 3;
+  int32 task_id = 4;
+  int32 attempt = 5;
 }
 
 message HeartbeatReply {

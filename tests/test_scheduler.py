@@ -570,7 +570,10 @@ def test_big_task_is_not_mistaken_for_a_straggler():
     wait(scheduler, clock, 9, alive=["w1"])  # 10 s: ten times longer than the others, but on schedule
     assert scheduler.get_task("w2") is None
 
-    wait(scheduler, clock, 6, alive=["w1"])  # 16 s: more than 1.5 times what its size explains
+    wait(scheduler, clock, 2, alive=["w1"])  # 12 s: 2 s late, but only 1.2 times what its size explains
+    assert scheduler.get_task("w2") is None
+
+    wait(scheduler, clock, 4, alive=["w1"])  # 16 s: more than 1.5 times what its size explains
     assert scheduler.get_task("w2").backup
 
 
@@ -626,8 +629,9 @@ def test_loser_of_the_race_is_told_to_stop():
     finish(scheduler, "w1", backup)
 
     assert scheduler.heartbeat("w4") is True  # stop: the other copy has finished
-    assert scheduler.heartbeat("w4") is False  # said once; w4 now has nothing to stop
-    assert scheduler.get_task("w4").kind == "reduce"  # and it carries on with new work
+    assert scheduler.heartbeat("w4") is True  # and again, in case the first reply was lost
+    assert scheduler.get_task("w4").kind == "reduce"  # w4 stops and carries on with new work
+    assert scheduler.heartbeat("w4") is False  # the new task is wanted
     assert scheduler.job_status("job-1").requeues == 0
 
 
@@ -700,3 +704,40 @@ def test_workers_of_a_failed_job_are_told_to_stop():
     scheduler.report("w2", "job-1", "map", failing.task_id, failing.attempt, False, "boom")
 
     assert scheduler.heartbeat("w1") is True
+
+
+def test_worker_names_its_attempt_and_is_told_to_stop_a_stale_one():
+    scheduler, clock, slow = four_maps_one_slow()
+    running = ("job-1", "map", slow.task_id, slow.attempt)
+    assert scheduler.heartbeat("w4", running) is False
+
+    clock.advance(6)  # w4 is frozen; the boss presumes it dead and re-queues its task
+    scheduler.check_workers()
+    scheduler.get_task("w1")
+
+    # w4 wakes up, still running its old attempt: it is told to stop.
+    assert scheduler.heartbeat("w4", running) is True
+    assert scheduler.heartbeat("w4", running) is True
+    assert [w.alive for w in scheduler.workers() if w.worker_id == "w4"] == [True]
+
+
+def test_failed_backup_copy_is_not_replaced():
+    scheduler, clock, slow, backup = slow_task_with_backup()
+
+    scheduler.report("w1", "job-1", "map", backup.task_id, backup.attempt, False, "disk full")
+    wait(scheduler, clock, 20, alive=["w4"])  # the original is still slow
+
+    assert scheduler.get_task("w2") is None  # one backup per hand-out
+
+
+def test_requeued_task_can_get_a_backup_again():
+    scheduler, clock, slow, backup = slow_task_with_backup()
+    clock.advance(6)
+    scheduler.check_workers()  # both copies are lost; the task is re-queued
+    again = scheduler.get_task("w5")
+    assert (again.task_id, again.backup) == (3, False)
+
+    wait(scheduler, clock, 3.5, alive=["w5"])  # slow again on w5
+
+    second = scheduler.get_task("w6")
+    assert (second.task_id, second.backup) == (3, True)

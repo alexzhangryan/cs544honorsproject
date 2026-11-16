@@ -48,9 +48,13 @@ def read_output(shared_root: Path, output_path: str) -> dict:
 
 
 def install_job(shared_root: Path, job_id: str, job_file: Path) -> None:
+    """Set up a job's directory in shared storage, as the boss does on submit."""
+    from mapreduce.storage import intermediate_dir
+
     target = job_source_path(shared_root, job_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(job_file, target)
+    intermediate_dir(shared_root, job_id).mkdir(exist_ok=True)
 
 
 def map_task(job_id, map_id, chunks, num_map, num_reduce, attempt=1, worker_id="w1") -> dict:

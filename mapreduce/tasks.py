@@ -94,7 +94,10 @@ def run_map(
     combine_fn = getattr(job, "combine_fn", None)
     finals = [intermediate_path(shared_root, job_id, map_id, r) for r in range(num_reduce)]
     temps = [Path(str(final) + tmp_suffix) for final in finals]
-    intermediate_dir(shared_root, job_id).mkdir(parents=True, exist_ok=True)
+    # The boss creates the job's intermediate directory when the job is
+    # submitted, and removes it when the job ends. A task never creates it:
+    # one that starts after its job was cancelled must fail here, not bring
+    # the directory back.
 
     files = []
     collected = defaultdict(list)  # key -> values waiting to be combined

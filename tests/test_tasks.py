@@ -390,3 +390,17 @@ def test_combine_fn_set_to_none_means_no_combiner(shared_root, tmp_path):
 
     assert len(pairs) == 3  # not combined
     assert read_output(shared_root, "output/x") == {"a": "2", "b": "1"}
+
+
+def test_map_task_does_not_recreate_a_removed_job_directory(shared_root):
+    """When a job is cancelled, the boss removes its intermediate directory.
+    A map task that starts after that must fail, not quietly recreate it."""
+    write_input(shared_root, TEXTS)
+    install_job(shared_root, "job-test", WORDCOUNT)
+    intermediate_dir(shared_root, "job-test").rmdir()
+    chunks = make_splits(list_input_files(shared_root, "input/books"), 1)[0]
+
+    with pytest.raises(FileNotFoundError):
+        run_task(str(shared_root), map_task("job-test", 0, chunks, 1, 2))
+
+    assert not intermediate_dir(shared_root, "job-test").exists()

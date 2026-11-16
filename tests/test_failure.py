@@ -3,6 +3,10 @@
 The cluster fixture uses a 3 second heartbeat timeout (15 heartbeats), so a
 dead worker is noticed quickly but a busy machine does not cause false
 alarms.
+
+These jobs run with backup tasks switched off. With them on, a free worker
+would often duplicate the dead worker's task before the timeout, and the
+re-queue path tested here would not be reached (see test_backup.py).
 """
 
 import os
@@ -36,7 +40,9 @@ def submit_slow_job(cluster, shared_root, tmp_path, maps=6, reduces=2):
     write_input(shared_root, {"input/lines.txt": "\n".join(LINES) + "\n"})
     job_file = tmp_path / "slow.py"
     job_file.write_text(SLOW_JOB)
-    return cluster.submit(job_file, "input", "output/slow", maps=maps, reduces=reduces)
+    return cluster.submit(
+        job_file, "input", "output/slow", maps=maps, reduces=reduces, backup_tasks=False
+    )
 
 
 def test_kill_one_worker_mid_task(cluster, shared_root, tmp_path):
@@ -110,14 +116,16 @@ def test_restarted_worker_rejoins(cluster, shared_root, tmp_path):
     assert cluster.workers()["w0"].alive
 
 
-def test_paused_worker_is_replaced_and_its_late_result_ignored(cluster, shared_root, tmp_path):
+def test_paused_worker_is_replaced_and_its_old_attempt_has_no_effect(cluster, shared_root, tmp_path):
     cluster.start_workers(2)
     job_id = submit_slow_job(cluster, shared_root, tmp_path)
     cluster.wait_until_busy(0)
 
-    cluster.pause_worker(0)  # frozen, not dead: it will finish its task after all
+    cluster.pause_worker(0)  # frozen, not dead
     cluster.wait_until(lambda: not cluster.workers()["w0"].alive, "w0 is presumed dead")
-    cluster.resume_worker(0)  # it wakes up, finishes the old attempt and reports it
+    # It wakes up still running the old attempt. Its next heartbeat tells it
+    # to stop; if it finishes first, its late report is ignored.
+    cluster.resume_worker(0)
     status = cluster.wait(job_id)
 
     assert status.state == "SUCCEEDED", status.error

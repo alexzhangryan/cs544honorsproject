@@ -126,7 +126,11 @@ def test_compose_survives_docker_kill(names, tmp_path):
 
     with grpc.insecure_channel("localhost:50051") as channel:
         stub = pb_grpc.BossStub(channel)
-        job_id = submit_job(stub, names["input"], names["output"], job_file, maps=8, reduces=4)
+        # Backup tasks are off so that the lost task has to come back through
+        # the heartbeat timeout, which is what this test is about.
+        job_id = submit_job(
+            stub, names["input"], names["output"], job_file, maps=8, reduces=4, backup_tasks=False
+        )
         wait_until(lambda: list_workers()["worker-2"].current_task, "worker-2 is in the middle of a task")
         docker("kill", "mr-worker-2")
         try:
@@ -141,3 +145,36 @@ def test_compose_survives_docker_kill(names, tmp_path):
         f"part-0000{r}.txt" for r in range(4)
     ]
     wait_until(lambda: list_workers()["worker-2"].alive, "worker-2 is alive again after being restarted")
+
+
+# Word count with some CPU work on every line, so that a map task takes about
+# a second, and several times longer on a worker with a low CPU limit.
+BUSY_WORDCOUNT = (
+    "def map_fn(key, value):\n"
+    "    sum(range(100000))\n"
+    "    for word in value.split():\n"
+    "        yield word.lower(), 1\n"
+    "def reduce_fn(key, values):\n"
+    "    yield key, sum(values)\n"
+)
+
+
+def test_compose_backup_task_for_a_throttled_worker(names, tmp_path):
+    texts = {path.name: path.read_text() for path in SAMPLE.glob("*.txt")}
+    job_file = tmp_path / "busy_wordcount.py"
+    job_file.write_text(BUSY_WORDCOUNT)
+    assert client("upload", str(SAMPLE), names["input"]) == 0
+
+    docker("update", "--cpus", "0.2", "mr-worker-3")  # one worker gets a fifth of a CPU
+    try:
+        with grpc.insecure_channel("localhost:50051") as channel:
+            stub = pb_grpc.BossStub(channel)
+            job_id = submit_job(stub, names["input"], names["output"], job_file, maps=8, reduces=4)
+            status = wait_for_job(stub, job_id)
+    finally:
+        docker("update", "--cpus", "1", "mr-worker-3")
+
+    assert status.state == "SUCCEEDED", status.error
+    assert read_output(SHARED, names["output"]) == reference_wordcount(texts)
+    assert status.backup_tasks >= 1  # a healthy worker took a copy of the slow worker's task
+    assert status.requeues == 0  # nobody died

@@ -294,9 +294,9 @@ All tests use pytest. GitHub Actions runs them on every pull request.
 - All workers but one are killed; the job still succeeds.
 - A killed worker is restarted under the same name; it rejoins and does more
   work.
-- A worker is frozen until the boss presumes it dead, then resumed. It
-  finishes its old task and reports it; the late report is ignored and the
-  output is still correct.
+- A worker is frozen until the boss presumes it dead, then resumed. Its next
+  heartbeat tells it to stop its old attempt (if it finishes first, its late
+  report is ignored), and the output is still correct.
 - A healthy worker running a long CPU-bound task is not mistaken for a dead
   one.
 - A job whose `map_fn` raises ends as failed with the traceback.

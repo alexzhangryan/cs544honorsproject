@@ -107,6 +107,7 @@ class BossServicer(pb_grpc.BossServicer):
             make_splits(files, request.num_map),
             request.num_reduce,
             reduce_order=request.reduce_order or "largest_first",
+            backup_tasks=not request.no_backup_tasks,
         )
         return job_id
 
@@ -126,6 +127,7 @@ class BossServicer(pb_grpc.BossServicer):
             requeues=status.requeues,
             output_path=status.output_path,
             intermediate_bytes=status.intermediate_bytes,
+            backup_tasks=status.backups,
         )
 
     def ListWorkers(self, request, context):
@@ -156,11 +158,14 @@ class BossServicer(pb_grpc.BossServicer):
             num_reduce=assignment.num_reduce,
             chunks=[pb.Chunk(path=c.path, start=c.start, end=c.end) for c in assignment.chunks],
             output_path=assignment.output_path,
+            backup=assignment.backup,
         )
 
     def Heartbeat(self, request, context):
-        self._scheduler.heartbeat(request.worker_id)
-        return pb.HeartbeatReply()
+        running = None
+        if request.job_id:
+            running = (request.job_id, PROTO_TO_KIND.get(request.kind, ""), request.task_id, request.attempt)
+        return pb.HeartbeatReply(cancel=self._scheduler.heartbeat(request.worker_id, running))
 
     def ReportTask(self, request, context):
         accepted = self._scheduler.report(

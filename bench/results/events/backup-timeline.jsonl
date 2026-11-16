@@ -1,0 +1,53 @@
+{"t": 0.0, "event": "submitted"}
+{"t": 0.004, "event": "assigned", "kind": "map", "task": 0, "attempt": 1, "worker": "worker-2"}
+{"t": 0.056, "event": "assigned", "kind": "map", "task": 1, "attempt": 1, "worker": "worker-1"}
+{"t": 0.057, "event": "assigned", "kind": "map", "task": 2, "attempt": 1, "worker": "worker-4"}
+{"t": 0.147, "event": "assigned", "kind": "map", "task": 3, "attempt": 1, "worker": "worker-3"}
+{"t": 2.377, "event": "completed", "kind": "map", "task": 0, "attempt": 1, "worker": "worker-2"}
+{"t": 2.379, "event": "assigned", "kind": "map", "task": 4, "attempt": 1, "worker": "worker-2"}
+{"t": 2.407, "event": "completed", "kind": "map", "task": 1, "attempt": 1, "worker": "worker-1"}
+{"t": 2.411, "event": "assigned", "kind": "map", "task": 5, "attempt": 1, "worker": "worker-1"}
+{"t": 2.465, "event": "completed", "kind": "map", "task": 2, "attempt": 1, "worker": "worker-4"}
+{"t": 2.467, "event": "assigned", "kind": "map", "task": 6, "attempt": 1, "worker": "worker-4"}
+{"t": 4.826, "event": "completed", "kind": "map", "task": 5, "attempt": 1, "worker": "worker-1"}
+{"t": 4.83, "event": "assigned", "kind": "map", "task": 7, "attempt": 1, "worker": "worker-1"}
+{"t": 4.844, "event": "completed", "kind": "map", "task": 6, "attempt": 1, "worker": "worker-4"}
+{"t": 4.845, "event": "assigned", "kind": "map", "task": 8, "attempt": 1, "worker": "worker-4"}
+{"t": 4.848, "event": "completed", "kind": "map", "task": 4, "attempt": 1, "worker": "worker-2"}
+{"t": 4.849, "event": "assigned", "kind": "map", "task": 9, "attempt": 1, "worker": "worker-2"}
+{"t": 7.504, "event": "completed", "kind": "map", "task": 9, "attempt": 1, "worker": "worker-2"}
+{"t": 7.51, "event": "assigned", "kind": "map", "task": 10, "attempt": 1, "worker": "worker-2"}
+{"t": 7.542, "event": "completed", "kind": "map", "task": 7, "attempt": 1, "worker": "worker-1"}
+{"t": 7.544, "event": "assigned", "kind": "map", "task": 11, "attempt": 1, "worker": "worker-1"}
+{"t": 7.663, "event": "completed", "kind": "map", "task": 8, "attempt": 1, "worker": "worker-4"}
+{"t": 7.665, "event": "assigned", "kind": "map", "task": 12, "attempt": 1, "worker": "worker-4"}
+{"t": 9.985, "event": "completed", "kind": "map", "task": 10, "attempt": 1, "worker": "worker-2"}
+{"t": 9.987, "event": "assigned", "kind": "map", "task": 13, "attempt": 1, "worker": "worker-2"}
+{"t": 10.067, "event": "completed", "kind": "map", "task": 11, "attempt": 1, "worker": "worker-1"}
+{"t": 10.068, "event": "assigned", "kind": "map", "task": 14, "attempt": 1, "worker": "worker-1"}
+{"t": 10.139, "event": "completed", "kind": "map", "task": 12, "attempt": 1, "worker": "worker-4"}
+{"t": 10.14, "event": "assigned", "kind": "map", "task": 15, "attempt": 1, "worker": "worker-4"}
+{"t": 10.837, "event": "completed", "kind": "map", "task": 3, "attempt": 1, "worker": "worker-3"}
+{"t": 12.446, "event": "completed", "kind": "map", "task": 13, "attempt": 1, "worker": "worker-2"}
+{"t": 12.582, "event": "completed", "kind": "map", "task": 14, "attempt": 1, "worker": "worker-1"}
+{"t": 12.596, "event": "completed", "kind": "map", "task": 15, "attempt": 1, "worker": "worker-4"}
+{"t": 12.603, "event": "map_phase_done", "reduce_sizes": [25898031, 16551502, 39542652, 12939264, 41351470, 34438380, 73891061, 31300132]}
+{"t": 12.603, "event": "assigned", "kind": "reduce", "task": 6, "attempt": 1, "worker": "worker-4"}
+{"t": 12.649, "event": "assigned", "kind": "reduce", "task": 4, "attempt": 1, "worker": "worker-2"}
+{"t": 12.668, "event": "assigned", "kind": "reduce", "task": 2, "attempt": 1, "worker": "worker-3"}
+{"t": 12.785, "event": "assigned", "kind": "reduce", "task": 5, "attempt": 1, "worker": "worker-1"}
+{"t": 15.566, "event": "completed", "kind": "reduce", "task": 5, "attempt": 1, "worker": "worker-1"}
+{"t": 15.567, "event": "assigned", "kind": "reduce", "task": 7, "attempt": 1, "worker": "worker-1"}
+{"t": 16.016, "event": "completed", "kind": "reduce", "task": 4, "attempt": 1, "worker": "worker-2"}
+{"t": 16.017, "event": "assigned", "kind": "reduce", "task": 0, "attempt": 1, "worker": "worker-2"}
+{"t": 18.176, "event": "completed", "kind": "reduce", "task": 0, "attempt": 1, "worker": "worker-2"}
+{"t": 18.178, "event": "assigned", "kind": "reduce", "task": 1, "attempt": 1, "worker": "worker-2"}
+{"t": 18.181, "event": "completed", "kind": "reduce", "task": 7, "attempt": 1, "worker": "worker-1"}
+{"t": 18.182, "event": "assigned", "kind": "reduce", "task": 3, "attempt": 1, "worker": "worker-1"}
+{"t": 18.601, "event": "completed", "kind": "reduce", "task": 6, "attempt": 1, "worker": "worker-4"}
+{"t": 18.603, "event": "assigned", "kind": "reduce", "task": 2, "attempt": 2, "worker": "worker-4", "backup": true}
+{"t": 19.228, "event": "completed", "kind": "reduce", "task": 3, "attempt": 1, "worker": "worker-1"}
+{"t": 19.515, "event": "completed", "kind": "reduce", "task": 1, "attempt": 1, "worker": "worker-2"}
+{"t": 21.478, "event": "completed", "kind": "reduce", "task": 2, "attempt": 2, "worker": "worker-4"}
+{"t": 21.479, "event": "cancelled", "kind": "reduce", "task": 2, "attempt": 1, "worker": "worker-3"}
+{"t": 21.479, "event": "job_succeeded"}

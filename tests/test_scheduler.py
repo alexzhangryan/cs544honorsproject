@@ -741,3 +741,66 @@ def test_requeued_task_can_get_a_backup_again():
 
     second = scheduler.get_task("w6")
     assert (second.task_id, second.backup) == (3, True)
+
+
+# Cancelling a job.
+
+
+def test_cancel_a_running_job():
+    scheduler, clock = make(num_map=2, num_reduce=1)
+    running = scheduler.get_task("w1")
+    clock.advance(3)
+
+    assert scheduler.cancel_job("job-1") is True
+
+    status = scheduler.job_status("job-1")
+    assert (status.state, status.elapsed) == ("CANCELLED", 3.0)
+    assert scheduler.get_task("w2") is None  # its idle map task is not handed out
+    assert scheduler.heartbeat("w1") is True  # w1 is told to stop
+    assert not finish(scheduler, "w1", running)  # and a late report changes nothing
+    clock.advance(10)
+    assert scheduler.job_status("job-1").elapsed == 3.0
+    assert scheduler.events("job-1")[-1]["event"] == "job_cancelled"
+
+
+def test_cancel_lets_the_next_job_run():
+    scheduler, _ = make(num_map=1, num_reduce=1)
+    scheduler.add_job("job-2", "in2", "out2", splits(1), 1)
+    scheduler.get_task("w1")  # job-1's only map task
+
+    scheduler.cancel_job("job-1")
+
+    assert scheduler.get_task("w2").job_id == "job-2"
+    assert scheduler.running_outputs() == [("job-2", "out2")]  # job-1's output may be reused
+
+
+def test_cancel_a_finished_job_changes_nothing():
+    scheduler, _ = make(num_map=1, num_reduce=1)
+    run_to_completion(scheduler)
+
+    assert scheduler.cancel_job("job-1") is False
+
+    assert scheduler.job_status("job-1").state == "SUCCEEDED"
+
+
+def test_cancel_twice():
+    scheduler, _ = make()
+
+    assert scheduler.cancel_job("job-1") is True
+    assert scheduler.cancel_job("job-1") is False
+
+
+def test_cancel_an_unknown_job():
+    assert Scheduler().cancel_job("job-nope") is None
+
+
+def test_dead_worker_of_a_cancelled_job_changes_nothing():
+    scheduler, clock = make(num_map=2, num_reduce=1)
+    scheduler.get_task("w1")
+    scheduler.cancel_job("job-1")
+
+    clock.advance(6)
+    scheduler.check_workers()
+
+    status = scheduler.job_status("job-1")
+    assert (status.state, status.requeues) == ("CANCELLED", 0)

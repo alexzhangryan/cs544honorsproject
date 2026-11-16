@@ -5,6 +5,7 @@ import socket
 import time
 
 from cluster import Cluster
+from mapreduce import mapreduce_pb2 as pb
 from helpers import TEXTS, WORDCOUNT, read_output, reference_wordcount, write_input
 
 
@@ -162,3 +163,35 @@ def test_combiner_on_a_real_cluster_shrinks_the_intermediate_data(cluster, share
     assert read_output(shared_root, "output/combined") == read_output(shared_root, "output/plain")
     assert read_output(shared_root, "output/combined") == reference_wordcount(texts)
     assert combined.intermediate_bytes * 20 < plain.intermediate_bytes
+
+
+def test_cancel_frees_the_workers(cluster, shared_root, tmp_path):
+    write_input(shared_root, {f"input/long/{i}.txt": "x\n" for i in range(4)})
+    write_input(shared_root, TEXTS)
+    endless = write_job(
+        tmp_path,
+        "endless.py",
+        "import time\n"
+        "def map_fn(key, value):\n"
+        "    time.sleep(60)\n"
+        "    yield value, 1\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
+    cluster.start_workers(2)
+    long_job = cluster.submit(endless, "input/long", "output/long", maps=4, reduces=1)
+    cluster.wait_until_busy(0, 1)
+
+    cluster.stub.CancelJob(pb.CancelJobRequest(job_id=long_job))
+
+    # Both workers drop their 60-second tasks within a few seconds: told to
+    # stop by the boss, or, if the cancel came before the task had opened
+    # its files, failing at once because the job's directory is gone.
+    cluster.wait_until(
+        lambda: not any(worker.current_task for worker in cluster.workers().values()),
+        "both workers have dropped the cancelled job's tasks",
+        timeout=5,
+    )
+    status = cluster.wait(cluster.submit(WORDCOUNT, "input/books", "output/wc", maps=2, reduces=1), timeout=15)
+    assert status.state == "SUCCEEDED", status.error
+    assert cluster.status(long_job).state == "CANCELLED"

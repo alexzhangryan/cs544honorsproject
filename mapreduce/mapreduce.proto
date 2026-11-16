@@ -8,6 +8,7 @@ service Boss {
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobReply);
   rpc GetJobStatus(JobStatusRequest) returns (JobStatusReply);
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersReply);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobReply);
 
   // Called by workers.
   rpc GetTask(GetTaskRequest) returns (TaskAssignment);
@@ -52,7 +53,7 @@ message JobStatusRequest {
 
 message JobStatusReply {
   string job_id = 1;
-  string state = 2;             // RUNNING, SUCCEEDED or FAILED
+  string state = 2;             // RUNNING, SUCCEEDED, FAILED or CANCELLED
   int32 maps_done = 3;
   int32 maps_total = 4;
   int32 reduces_done = 5;
@@ -63,6 +64,15 @@ message JobStatusReply {
   string output_path = 10;
   int64 intermediate_bytes = 11;  // size of the map output; 0 until the map phase ends
   int32 backup_tasks = 12;        // backup copies started for slow tasks
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobReply {
+  string state = 1;             // CANCELLED
+  string output_path = 2;       // where any output written so far was left
 }
 
 message ListWorkersRequest {}

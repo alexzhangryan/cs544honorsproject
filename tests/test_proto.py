@@ -6,6 +6,7 @@ def test_generated_code_imports():
 
     service = mapreduce_pb2.DESCRIPTOR.services_by_name["Boss"]
     assert sorted(method.name for method in service.methods) == [
+        "CancelJob",
         "GetJobStatus",
         "GetTask",
         "Heartbeat",

@@ -123,7 +123,14 @@ is still running.
 ```
 python -m mapreduce.client status <job-id>     # progress, state, error if any
 python -m mapreduce.client workers             # each worker and whether it is alive
+python -m mapreduce.client cancel <job-id>     # stop a running job
 ```
+
+Cancelling marks the job CANCELLED: nothing more of it is handed out, and
+the workers running its tasks are told to stop in the reply to their next
+heartbeat. The boss deletes the job's intermediate files at once. A task that
+starts after that fails as soon as it tries to write, because tasks never
+create the intermediate directory themselves.
 
 **The job file** is an ordinary Python file that defines two generator
 functions:
@@ -162,6 +169,7 @@ service:
 | client | `SubmitJob` | send paths, job file source, M and R; returns a job id |
 | client | `GetJobStatus` | state, tasks done out of total, error text, elapsed time |
 | client | `ListWorkers` | each worker's id and whether it is alive |
+| client | `CancelJob` | stop a running job |
 | worker | `GetTask` | ask for the next task; the reply is a map task, a reduce task, or "nothing right now" |
 | worker | `Heartbeat` | "I am still alive", sent while a task is running |
 | worker | `ReportTask` | task finished, or failed with an error message |

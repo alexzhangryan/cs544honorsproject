@@ -331,3 +331,45 @@ def test_submit_command_passes_its_options_on(capsys):
     assert (plain.no_backup_tasks, plain.reduce_order) == (False, "largest_first")
     assert submitted("--no-backup-tasks").no_backup_tasks is True
     assert submitted("--reduce-order", "numerical").reduce_order == "numerical"
+
+
+# Cancelling a job.
+
+
+def test_cancel_command(cluster, shared_root, capsys):
+    write_input(shared_root, TEXTS)  # no workers, so the job stays running
+    job_id = cluster.submit(WORDCOUNT, "input/books", "output/wc", maps=2, reduces=1)
+
+    assert client(cluster, shared_root, "cancel", job_id) == 0
+    out = capsys.readouterr().out
+    assert f"cancelled {job_id}" in out
+    assert "output/wc" in out  # says where any output written so far was left
+
+    assert client(cluster, shared_root, "cancel", job_id) == 1
+    assert_one_line_error(capsys.readouterr(), "already CANCELLED")
+    assert client(cluster, shared_root, "cancel", "job-nope") == 1
+    assert_one_line_error(capsys.readouterr(), "unknown job")
+
+
+def test_submit_reports_a_job_cancelled_elsewhere(capsys):
+    from mapreduce.client import cmd_submit
+
+    class Stub:
+        def __init__(self):
+            self.states = iter(["RUNNING", "CANCELLED"])
+
+        def SubmitJob(self, request, timeout=None):
+            return type("Reply", (), {"job_id": "job-1"})()
+
+        def GetJobStatus(self, request, timeout=None):
+            return pb.JobStatusReply(job_id="job-1", state=next(self.states), elapsed_seconds=4.2,
+                                     error="cancelled by the user", output_path="out")
+
+    args = build_parser().parse_args(["submit", "--input", "in", "--output", "out", "--job", str(WORDCOUNT),
+                                      "--maps", "1", "--reduces", "1"])
+
+    assert cmd_submit(args, Stub()) == 1
+
+    out = capsys.readouterr().out
+    assert "CANCELLED after 4.2s" in out
+    assert "FAILED" not in out

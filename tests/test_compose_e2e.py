@@ -178,3 +178,28 @@ def test_compose_backup_task_for_a_throttled_worker(names, tmp_path):
     assert read_output(SHARED, names["output"]) == reference_wordcount(texts)
     assert status.backup_tasks >= 1  # a healthy worker took a copy of the slow worker's task
     assert status.requeues == 0  # nobody died
+
+
+def test_compose_cancel_frees_every_worker(names, tmp_path):
+    from mapreduce.storage import intermediate_dir
+
+    job_file = tmp_path / "slow_wordcount.py"
+    job_file.write_text(SLOW_WORDCOUNT)
+    assert client("upload", str(SAMPLE), names["input"]) == 0
+
+    with grpc.insecure_channel("localhost:50051") as channel:
+        stub = pb_grpc.BossStub(channel)
+        job_id = submit_job(stub, names["input"], names["output"], job_file, maps=8, reduces=4)
+        wait_until(lambda: all(w.current_task for w in list_workers().values()), "all four workers are busy")
+
+        assert client("cancel", job_id) == 0
+        cancelled_at = time.monotonic()
+        wait_until(lambda: not any(w.current_task for w in list_workers().values()),
+                   "every worker has stopped", timeout=10)
+        freed_after = time.monotonic() - cancelled_at
+
+        status = stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id), timeout=5)
+
+    assert status.state == "CANCELLED"
+    assert not intermediate_dir(SHARED, job_id).exists()
+    assert freed_after < 5, f"the workers took {freed_after:.1f}s to stop"

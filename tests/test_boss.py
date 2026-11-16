@@ -392,3 +392,40 @@ def test_reduce_input_sizes_counts_only_finished_intermediate_files(shared_root)
         (directory / name).write_bytes(b"x" * size)
 
     assert reduce_input_sizes(shared_root)("job-1", 3) == [15, 107, 0]
+
+
+# Cancelling a job.
+
+
+def test_cancel_job(stub, shared_root):
+    write_input(shared_root, TEXTS)
+    job_id = stub.SubmitJob(wordcount_request()).job_id
+    assignment = stub.GetTask(pb.GetTaskRequest(worker_id="w1"))
+    run_task(str(shared_root), as_task(assignment, "w1"))  # one map task's files exist
+
+    reply = stub.CancelJob(pb.CancelJobRequest(job_id=job_id))
+
+    assert (reply.state, reply.output_path) == ("CANCELLED", "output/wc")
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).state == "CANCELLED"
+    assert not intermediate_dir(shared_root, job_id).exists()  # its intermediate files are removed
+    assert stub.Heartbeat(pb.HeartbeatRequest(
+        worker_id="w1", job_id=job_id, kind=assignment.kind, task_id=assignment.task_id,
+        attempt=assignment.attempt,
+    )).cancel
+    assert stub.GetTask(pb.GetTaskRequest(worker_id="w2")).kind == pb.NONE
+
+
+def test_cancel_job_that_has_finished_or_does_not_exist(stub, shared_root):
+    write_input(shared_root, TEXTS)
+    job_id = stub.SubmitJob(wordcount_request()).job_id
+    work_until_idle(stub, shared_root)
+
+    with pytest.raises(grpc.RpcError) as finished:
+        stub.CancelJob(pb.CancelJobRequest(job_id=job_id))
+    with pytest.raises(grpc.RpcError) as unknown:
+        stub.CancelJob(pb.CancelJobRequest(job_id="job-nope"))
+
+    assert finished.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+    assert "already SUCCEEDED" in finished.value.details()
+    assert unknown.value.code() == grpc.StatusCode.NOT_FOUND
+    assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).state == "SUCCEEDED"

@@ -29,7 +29,7 @@ import grpc
 from mapreduce import MAX_TASKS
 from mapreduce import mapreduce_pb2 as pb
 from mapreduce import mapreduce_pb2_grpc as pb_grpc
-from mapreduce.scheduler import SUCCEEDED, Scheduler
+from mapreduce.scheduler import CANCELLED, SUCCEEDED, Scheduler
 from mapreduce.splits import list_input_files, make_splits
 from mapreduce.storage import events_path, intermediate_dir, job_source_path, resolve_inside
 
@@ -129,6 +129,22 @@ class BossServicer(pb_grpc.BossServicer):
             intermediate_bytes=status.intermediate_bytes,
             backup_tasks=status.backups,
         )
+
+    def CancelJob(self, request, context):
+        cancelled = self._scheduler.cancel_job(request.job_id)
+        if cancelled is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"unknown job: {request.job_id!r}")
+        status = self._scheduler.job_status(request.job_id)
+        if not cancelled:
+            context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION, f"job {request.job_id} has already {status.state}"
+            )
+        # With the intermediate files gone, a task that is still running
+        # cannot finish either: a reduce task keeps its unfinished output
+        # there, so it has nothing left to move into the output directory.
+        shutil.rmtree(intermediate_dir(self._shared_root, request.job_id), ignore_errors=True)
+        log.info("job %s cancelled; its intermediate files are removed", request.job_id)
+        return pb.CancelJobReply(state=CANCELLED, output_path=status.output_path)
 
     def ListWorkers(self, request, context):
         return pb.ListWorkersReply(

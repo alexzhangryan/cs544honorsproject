@@ -192,6 +192,7 @@ Other client commands:
 
 ```bash
 python -m mapreduce.client status <job-id>     # progress of one job
+python -m mapreduce.client cancel <job-id>     # stop a running job
 python -m mapreduce.client workers             # the workers and what each is doing
 python -m mapreduce.client submit ... --no-wait   # print the job id and return at once
 ```
@@ -199,6 +200,13 @@ python -m mapreduce.client submit ... --no-wait   # print the job id and return 
 If a job's code raises an exception, the job fails and the client prints the
 traceback. A failed job can leave some part files behind, so delete its output
 directory (or choose another `--output`) before submitting again.
+
+`cancel` stops a job that is running, for example one submitted with the
+wrong options. Pressing Ctrl-C in `submit` only stops the client waiting, and
+prints the job id to cancel. The job's workers stop their tasks within about
+a second and take the next job's work, and the job's intermediate files are
+deleted. Like a failed job, a cancelled one can leave part files in its
+output directory.
 
 ## 7. Try the special feature: kill a worker
 

@@ -31,6 +31,7 @@ COMPLETED = "completed"
 RUNNING = "RUNNING"
 SUCCEEDED = "SUCCEEDED"
 FAILED = "FAILED"
+CANCELLED = "CANCELLED"
 
 # Backup tasks (see Scheduler._find_straggler).
 BACKUP_MIN_FINISHED = 3  # completed tasks of a kind needed before the rest can be judged
@@ -272,6 +273,24 @@ class Scheduler:
                 self._start_reduce_phase(job)
             if all(reduce.state == COMPLETED for reduce in job.reduces):
                 self._finish(job, SUCCEEDED)
+            return True
+
+    def cancel_job(self, job_id: str) -> Optional[bool]:
+        """Stop a running job. Returns True if the job has now been
+        cancelled, False if it had already ended (in any way, including an
+        earlier cancel), and None if there is no such job.
+
+        Nothing more of the job is handed out, reports for it are ignored,
+        and the workers running its tasks are told to stop with their next
+        heartbeat.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.state != RUNNING:
+                return False
+            self._finish(job, CANCELLED, "cancelled by the user")
             return True
 
     def heartbeat(self, worker_id: str, running: Optional[tuple[str, str, int, int]] = None) -> bool:
@@ -535,10 +554,10 @@ class Scheduler:
         job.state = state
         job.error = error
         job.finished_at = self._clock()
-        self._event(job, "job_succeeded" if state == SUCCEEDED else "job_failed")
+        self._event(job, {SUCCEEDED: "job_succeeded", CANCELLED: "job_cancelled"}.get(state, "job_failed"))
         elapsed = job.finished_at - job.submitted_at
-        if state == SUCCEEDED:
-            log.info("job %s SUCCEEDED after %.1fs", job.job_id, elapsed)
+        if state in (SUCCEEDED, CANCELLED):
+            log.info("job %s %s after %.1fs", job.job_id, state, elapsed)
         else:
             reason = (error.strip().splitlines() or ["unknown error"])[-1]
             log.warning("job %s FAILED after %.1fs: %s", job.job_id, elapsed, reason)

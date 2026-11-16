@@ -1,8 +1,10 @@
 # Performance evaluation
 
-Three experiments, all on the real Docker Compose cluster, all running word
+Six experiments, all on the real Docker Compose cluster, all running word
 count ([examples/wordcount.py](../examples/wordcount.py)) over 100 MB of text
-with 16 map tasks and 8 reduce tasks.
+with 16 map tasks and 8 reduce tasks. Sections 1 to 3 measure the base system
+and its main feature, worker failure handling. Section 4 measures the three
+features added afterwards.
 
 **Results in brief**
 
@@ -10,8 +12,14 @@ with 16 map tasks and 8 reduce tasks.
   against 45.1 s).
 - Killing a worker in the middle of a job delays the job by one to two
   seconds. The job always finishes.
-- In all 56 timed runs, 28 of them with a worker killed mid-job, the output
-  was byte-identical to the failure-free output.
+- In all 56 timed runs of the failure experiment, 28 of them with a worker
+  killed mid-job, the output was byte-identical to the failure-free output.
+- A combiner cuts word count's intermediate data from 263 MB to 1.2 MB and
+  the job from 15.4 s to 2.2 s.
+- Handing out the largest reduce task first shortens the reduce phase from
+  7.3 s to 5.6 s.
+- With one worker slowed to a quarter of a CPU, backup tasks bring the job
+  from 26.5 s down to 21.6 s.
 
 ## Setup
 
@@ -179,6 +187,90 @@ other tasks.
 The last task to finish is reduce task 6 on `worker-3`, which takes 5.0 s.
 This is the oversized reduce task from section 1.
 
+## 4. The additional features
+
+Each experiment switches on only the feature it is about. The combiner, in
+particular, removes nearly all of the intermediate data, which would leave
+the other two features nothing to work on. Sections 1 to 3 were measured
+before these features existed, so they describe the base system.
+
+Each configuration was run 4 times, interleaved and in rotating order, with
+a 25-second pause before each run.
+
+### 4.1 Combiner
+
+Word count with and without `combine_fn`
+([examples/wordcount_combiner.py](../examples/wordcount_combiner.py)).
+
+![Intermediate data and job time with and without a combiner](../bench/plots/combiner.png)
+
+| | Intermediate data | Job time in each of 4 runs (s) | Median (s) | Output identical |
+|---|---|---|---|---|
+| without `combine_fn` | 263.1 MB | 14.6, 15.0, 15.8, 17.2 | 15.4 | 4 of 4 |
+| with `combine_fn` | 1.2 MB | 2.1, 2.2, 2.2, 2.3 | 2.2 | 4 of 4 |
+
+The intermediate data shrinks 228 times. The text has only 339 distinct
+words, so a map task's 1.5 million pairs collapse to a few hundred pairs per
+batch of 100,000.
+
+The job becomes 7 times faster, for two reasons. The map phase no longer
+writes 263 MB to shared storage (9.5 s down to 1.9 s), and the reduce phase
+has almost nothing to read and group (5.9 s down to 0.3 s). Writing and
+reading the intermediate data was most of the work, not counting words.
+
+### 4.2 Largest reduce task first
+
+Reduce tasks handed out in numerical order (the old behaviour) and largest
+first. Times are taken from the boss's scheduling log.
+
+![The reduce phase with tasks in numerical order and largest first](../bench/plots/reduce_order.png)
+
+| | Reduce phase in each of 4 runs (s) | Median (s) | Largest task starts, median | Job, median (s) |
+|---|---|---|---|---|
+| numerical order | 7.1, 7.1, 7.4, 7.6 | 7.3 | 2.0 s into the phase | 16.9 |
+| largest first | 5.6, 5.6, 5.6, 5.9 | 5.6 | at once | 15.0 |
+
+This fixes the problem found in section 1. Reduce task 6 holds 27% of the
+reduce work. In numerical order it was handed out in the second round, two
+seconds into the phase, and the job waited for it alone at the end. Handed
+out first, it runs while the other workers share out the smaller tasks. The
+reduce phase is 1.7 s shorter, close to the 1.8 s estimated in section 1.
+The four runs of each case do not overlap.
+
+### 4.3 Backup tasks for a slow worker
+
+`worker-3` limited to a quarter of a CPU with `docker update --cpus 0.25`,
+so that its tasks take about four times as long. Three cases: four healthy
+workers; the slow worker with backup tasks off; the slow worker with backup
+tasks on.
+
+![Job time with one slow worker, with and without backup tasks](../bench/plots/backup.png)
+
+| | Job time in each of 4 runs (s) | Median (s) | Backup copies started | Output identical |
+|---|---|---|---|---|
+| 4 healthy workers | 15.6, 15.6, 18.5, 19.6 | 17.0 | 0 | 4 of 4 |
+| slow worker, no backup tasks | 26.1, 26.1, 26.9, 31.4 | 26.5 | 0 | 4 of 4 |
+| slow worker, backup tasks on | 20.9, 21.5, 21.7, 22.6 | 21.6 | 1 or 2 per run | 4 of 4 |
+
+The slow worker costs 9.5 s without backups. Backup tasks win back 5.0 s of
+that, a little over half.
+
+They cannot win back all of it, for two reasons that the timeline below
+shows. First, a backup is only started when a worker has nothing else to
+do, which is near the end of a phase. Second, a task only counts as slow
+once it is clearly late (1.5 times its expected time and at least a second),
+so some time is always lost before the backup starts.
+
+![Which worker ran which task, in a run with a backup copy](../bench/plots/backup_timeline.png)
+
+In this run `worker-3` takes reduce task 2 at the start of the reduce phase
+(12.6 s). Six seconds later the other workers have run out of reduce tasks
+and reduce task 2 is clearly late, so `worker-4` gets a backup copy. The
+backup finishes at 21.5 s, the job is done, and `worker-3` is told to stop.
+`worker-3` also held up the map phase. That is not something backups can
+help with here, because the other workers still had map tasks to do while it
+was busy.
+
 ## Limits of these measurements
 
 - One laptop, in use, without a fan. The numbers show how the system
@@ -193,6 +285,12 @@ This is the oversized reduce task from section 1.
   round of error-handling fixes in the boss. The failure runs used the code
   after those fixes. The fixes do not change how tasks are scheduled or run
   in a job without errors.
+- The measurements in section 4 were taken just before the review of those
+  features. The fixes made after the review (a stop instruction is repeated
+  until the worker acts on it, and `combine_fn = None` means no combiner) do
+  not change which tasks are handed out or when.
+- The slow worker in section 4.3 is slowed by a CPU limit. A worker slowed by
+  a failing disk or a busy network would behave differently.
 
 ## Repeating the measurements
 
@@ -204,13 +302,16 @@ pip install -r requirements-dev.txt
 python bench/run_benchmarks.py --only scaling --trials 5 --cooldown 25
 python bench/run_benchmarks.py --only failure --trials 4 --cooldown 45
 python bench/run_benchmarks.py --only timeline --cooldown 25
+python bench/run_benchmarks.py --only combiner --trials 4 --cooldown 25
+python bench/run_benchmarks.py --only reduce_order --trials 4 --cooldown 25
+python bench/run_benchmarks.py --only backup --trials 4 --cooldown 25
 python bench/plot.py
 ```
 
-This takes about 45 minutes. The pauses (`--cooldown`) are for a machine
+This takes about 65 minutes. The pauses (`--cooldown`) are for a machine
 that slows down when hot. On a machine with proper cooling,
-`python bench/run_benchmarks.py` runs all three experiments without pauses
-in about 15 minutes.
+`python bench/run_benchmarks.py` runs all six experiments without pauses in
+about 25 minutes.
 
 The script starts, stops and kills the worker containers, and generates the
 dataset in `data/bench` if it is not there.
@@ -221,5 +322,7 @@ dataset in `data/bench` if it is not there.
 | [bench/results/failure.csv](../bench/results/failure.csv) | one row per run of experiment 2, with the output hash |
 | [bench/results/events/](../bench/results/events/) | the boss's scheduling log for every run |
 | [bench/results/timeline_events.jsonl](../bench/results/timeline_events.jsonl) | the log drawn in section 3 |
-| [bench/results/environment.json](../bench/results/environment.json) | the machine and settings |
-| [bench/plots/](../bench/plots/) | the three plots |
+| [bench/results/combiner.csv](../bench/results/combiner.csv), [reduce_order.csv](../bench/results/reduce_order.csv), [backup.csv](../bench/results/backup.csv) | one row per run of each experiment in section 4 |
+| [bench/results/backup_timeline_events.jsonl](../bench/results/backup_timeline_events.jsonl) | the log drawn in section 4.3 |
+| [bench/results/environment.json](../bench/results/environment.json) | the machine, and the settings of each experiment |
+| [bench/plots/](../bench/plots/) | the seven plots |

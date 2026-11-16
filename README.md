@@ -312,21 +312,24 @@ GitHub Actions runs both on every pull request
 ## Performance evaluation
 
 [docs/evaluation.md](docs/evaluation.md) has the measurements and plots. They
-were produced with these commands, which take about 45 minutes and stop and
-kill worker containers as they go:
+were produced with these commands, which take about 65 minutes and stop,
+slow down and kill worker containers as they go:
 
 ```bash
 pip install -r requirements-dev.txt
 python bench/run_benchmarks.py --only scaling --trials 5 --cooldown 25
 python bench/run_benchmarks.py --only failure --trials 4 --cooldown 45
 python bench/run_benchmarks.py --only timeline --cooldown 25
+python bench/run_benchmarks.py --only combiner --trials 4 --cooldown 25
+python bench/run_benchmarks.py --only reduce_order --trials 4 --cooldown 25
+python bench/run_benchmarks.py --only backup --trials 4 --cooldown 25
 python bench/plot.py
 ```
 
 `--cooldown` pauses before each run. The measurements were taken on a
 fanless laptop that slows down when it gets hot. On a machine with proper
-cooling, `python bench/run_benchmarks.py` runs all three experiments without
-pauses in about 15 minutes.
+cooling, `python bench/run_benchmarks.py` runs all six experiments without
+pauses in about 25 minutes.
 
 ## Stopping and cleaning up
 

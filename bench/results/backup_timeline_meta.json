@@ -1,0 +1,8 @@
+{
+  "slow_worker": "worker-3",
+  "cpus": 0.25,
+  "seconds": 21.48,
+  "backups": 1,
+  "maps": 16,
+  "reduces": 8
+}

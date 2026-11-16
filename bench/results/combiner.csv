@@ -1,0 +1,9 @@
+case,trial,seconds,intermediate_bytes,map_seconds,reduce_seconds,identical
+without_combiner,1,17.16,275912492,10.48,6.68,yes
+with_combiner,1,2.2,1212367,1.92,0.27,yes
+with_combiner,2,2.31,1212367,2.04,0.27,yes
+without_combiner,2,14.96,275912492,9.36,5.61,yes
+without_combiner,3,15.79,275912492,9.69,6.1,yes
+with_combiner,3,2.06,1212367,1.78,0.28,yes
+with_combiner,4,2.19,1212367,1.91,0.28,yes
+without_combiner,4,14.55,275912492,8.96,5.59,yes

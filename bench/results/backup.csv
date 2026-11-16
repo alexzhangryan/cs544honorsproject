@@ -1,0 +1,13 @@
+case,trial,seconds,backups,identical
+healthy,1,18.46,0,yes
+slow_worker_no_backups,1,26.1,0,yes
+slow_worker_backups,1,22.63,1,yes
+slow_worker_no_backups,2,31.41,0,yes
+slow_worker_backups,2,20.87,1,yes
+healthy,2,15.61,0,yes
+slow_worker_backups,3,21.66,2,yes
+healthy,3,19.63,0,yes
+slow_worker_no_backups,3,26.94,0,yes
+healthy,4,15.55,0,yes
+slow_worker_no_backups,4,26.09,0,yes
+slow_worker_backups,4,21.48,2,yes

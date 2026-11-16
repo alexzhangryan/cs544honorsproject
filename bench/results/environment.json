@@ -7,8 +7,6 @@
   "dataset_mb": 100.0,
   "map_tasks": 16,
   "reduce_tasks": 8,
-  "heartbeat_timeout_seconds": 5,
-  "worker_cpu_limit": 1,
   "experiments": {
     "scaling": {
       "trials": 5,
@@ -21,6 +19,24 @@
     "failure": {
       "trials": 4,
       "cooldown_seconds": 45.0
+    },
+    "combiner": {
+      "trials": 4,
+      "cooldown_seconds": 25.0,
+      "heartbeat_timeout_seconds": 5.0,
+      "worker_cpu_limit": 1.0
+    },
+    "reduce_order": {
+      "trials": 4,
+      "cooldown_seconds": 25.0,
+      "heartbeat_timeout_seconds": 5.0,
+      "worker_cpu_limit": 1.0
+    },
+    "backup": {
+      "trials": 4,
+      "cooldown_seconds": 25.0,
+      "heartbeat_timeout_seconds": 5.0,
+      "worker_cpu_limit": 1.0
     }
   }
 }

@@ -32,6 +32,10 @@ from mapreduce.storage import (
 # system), so files are read and written in large blocks.
 IO_BUFFER = 1024 * 1024
 
+# A map task with a combiner collects this many pairs in memory, combines
+# them, writes the result out and starts again.
+COMBINE_BATCH = 100_000
+
 
 class JobError(Exception):
     """The user's job file cannot be used."""
@@ -55,7 +59,20 @@ def load_job(path: Path) -> types.ModuleType:
     for name in ("map_fn", "reduce_fn"):
         if not callable(getattr(module, name, None)):
             raise JobError(f"the job file does not define a function named {name}")
+    combine_fn = getattr(module, "combine_fn", None)
+    if combine_fn is not None and not callable(combine_fn):
+        raise JobError("combine_fn in the job file is not a function")
     return module
+
+
+def write_pair(files: list, key, value, source: str) -> None:
+    """Write one intermediate pair to the file of the reduce task that handles its key."""
+    if not isinstance(key, str):
+        raise TypeError(
+            f"intermediate keys must be strings, but {source} yielded "
+            f"a key of type {type(key).__name__}"
+        )
+    files[partition(key, len(files))].write(json.dumps([key, value]) + "\n")
 
 
 def run_map(
@@ -67,25 +84,49 @@ def run_map(
     tmp_suffix: str,
 ) -> None:
     """Call map_fn on every line of the chunks and write one intermediate
-    file per reduce task."""
+    file per reduce task.
+
+    If the job file defines combine_fn, the pairs from map_fn are first
+    collected by key in memory and passed through combine_fn, a batch at a
+    time, and what combine_fn yields is written instead.
+    """
     job = load_job(job_source_path(shared_root, job_id))
+    combine_fn = getattr(job, "combine_fn", None)
     finals = [intermediate_path(shared_root, job_id, map_id, r) for r in range(num_reduce)]
     temps = [Path(str(final) + tmp_suffix) for final in finals]
     intermediate_dir(shared_root, job_id).mkdir(parents=True, exist_ok=True)
 
     files = []
+    collected = defaultdict(list)  # key -> values waiting to be combined
+    collected_count = 0
+
+    def combine_collected() -> None:
+        for key, values in collected.items():
+            for out_key, out_value in combine_fn(key, iter(values)) or ():
+                write_pair(files, out_key, out_value, "combine_fn")
+        collected.clear()
+
     try:
         for temp in temps:
             files.append(open(temp, "w", encoding="utf-8", buffering=IO_BUFFER))
         for chunk in chunks:
             for line in read_lines(shared_root, chunk):
                 for key, value in job.map_fn(chunk.path, line) or ():
+                    if combine_fn is None:
+                        write_pair(files, key, value, "map_fn")
+                        continue
                     if not isinstance(key, str):
                         raise TypeError(
                             "intermediate keys must be strings, but map_fn yielded "
                             f"a key of type {type(key).__name__}"
                         )
-                    files[partition(key, num_reduce)].write(json.dumps([key, value]) + "\n")
+                    collected[key].append(value)
+                    collected_count += 1
+                    if collected_count >= COMBINE_BATCH:
+                        combine_collected()
+                        collected_count = 0
+        if combine_fn is not None:
+            combine_collected()
         for f in files:
             f.close()
         for temp, final in zip(temps, finals):

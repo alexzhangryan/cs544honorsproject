@@ -2,8 +2,10 @@
 
 Same job as wordcount.py, plus combine_fn. Each map task then adds up the
 counts of a word itself and writes one pair per distinct word, instead of
-one pair for every occurrence. The result is the same; there is much less
-intermediate data to write, read and group.
+one pair for every occurrence. (A map task combines in batches of 100,000
+pairs, so a large one writes one pair per distinct word per batch.) The
+result is the same; there is much less intermediate data to write, read
+and group.
 """
 
 

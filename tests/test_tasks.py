@@ -228,13 +228,14 @@ def test_combiner_works_in_small_batches(shared_root, monkeypatch):
     from mapreduce import tasks
 
     monkeypatch.setattr(tasks, "COMBINE_BATCH", 3)  # combine after every 3 pairs
-    write_input(shared_root, {"input/x.txt": "a b a a c b a\n"})
+    write_input(shared_root, {"input/x.txt": "a a a a a a a\n"})
 
     combined = run_map_phase(shared_root, WORDCOUNT_COMBINER, "input", num_map=1, num_reduce=1, job_id="batched")
     run_job_locally(shared_root, WORDCOUNT_COMBINER, "input", "output/x", num_map=1, num_reduce=1)
 
-    assert len(combined) > 3  # "a" was combined in more than one batch
-    assert read_output(shared_root, "output/x") == {"a": "4", "b": "2", "c": "1"}
+    # Two full batches of three, then the one left over.
+    assert sorted(combined) == [("a", 1), ("a", 3), ("a", 3)]
+    assert read_output(shared_root, "output/x") == {"a": "7"}
 
 
 def test_combiner_that_changes_keys_is_partitioned_by_the_new_key(shared_root, tmp_path):
@@ -307,3 +308,85 @@ def test_combiner_that_is_not_the_same_function_as_the_reducer(shared_root, tmp_
     run_job_locally(shared_root, average_line_length, "input", "output/x", num_map=2, num_reduce=2)
 
     assert read_output(shared_root, "output/x") == {"input/a.txt": "4.0", "input/b.txt": "2.0"}
+
+
+def test_combiner_error_in_a_later_batch_leaves_no_files(shared_root, tmp_path, monkeypatch):
+    from mapreduce import tasks
+
+    monkeypatch.setattr(tasks, "COMBINE_BATCH", 2)
+    write_input(shared_root, {"input/x.txt": "a\nb\nboom\nc\n"})
+    bad = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    yield value, 1\n"
+        "def combine_fn(key, values):\n"
+        "    if key == 'boom':\n"
+        "        raise ValueError('combine exploded')\n"
+        "    yield key, sum(values)\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
+    install_job(shared_root, "job-test", bad)
+    chunks = make_splits(list_input_files(shared_root, "input"), 1)[0]
+
+    with pytest.raises(ValueError, match="combine exploded"):
+        run_task(str(shared_root), map_task("job-test", 0, chunks, 1, 2))
+
+    assert all_files(intermediate_dir(shared_root, "job-test")) == []
+
+
+def test_combiner_that_yields_nothing_drops_the_key(shared_root, tmp_path):
+    write_input(shared_root, {"input/x.txt": "keep drop keep\n"})
+    filtering = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    for word in value.split():\n"
+        "        yield word, 1\n"
+        "def combine_fn(key, values):\n"
+        "    if key == 'drop':\n"
+        "        return None\n"
+        "    return [(key, sum(values))]\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
+
+    run_job_locally(shared_root, filtering, "input", "output/x", num_map=1, num_reduce=2)
+
+    assert read_output(shared_root, "output/x") == {"keep": "2"}
+
+
+def test_map_fn_non_string_key_with_a_combiner(shared_root, tmp_path):
+    write_input(shared_root, {"input/x.txt": "a\n"})
+    bad = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    yield 42, 1\n"
+        "def combine_fn(key, values):\n"
+        "    yield key, sum(values)\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n",
+    )
+
+    with pytest.raises(TypeError, match="map_fn"):
+        run_job_locally(shared_root, bad, "input", "output/x", num_map=1, num_reduce=1)
+
+
+def test_combine_fn_set_to_none_means_no_combiner(shared_root, tmp_path):
+    from helpers import run_map_phase
+
+    write_input(shared_root, {"input/x.txt": "a a b\n"})
+    switched_off = job_file(
+        tmp_path,
+        "def map_fn(key, value):\n"
+        "    for word in value.split():\n"
+        "        yield word, 1\n"
+        "def reduce_fn(key, values):\n"
+        "    yield key, sum(values)\n"
+        "combine_fn = None\n",
+    )
+
+    pairs = run_map_phase(shared_root, switched_off, "input", num_map=1, num_reduce=1, job_id="off")
+    run_job_locally(shared_root, switched_off, "input", "output/x", num_map=1, num_reduce=1)
+
+    assert len(pairs) == 3  # not combined
+    assert read_output(shared_root, "output/x") == {"a": "2", "b": "1"}

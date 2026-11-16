@@ -128,8 +128,21 @@ Submit it like any other job (`--job examples/wordcount_combiner.py`, with a
 new `--output`). The result is the same as without the combiner. On the
 sample data the intermediate data shrinks from 1.1 MB to 34.9 KB.
 
-A combiner is only correct when the reduction can be done in pieces and in
-any order, as with a sum, a count, a maximum or a minimum.
+A map task combines its output in batches of 100,000 pairs, so a key can be
+combined more than once. What `combine_fn` yields is then passed to
+`reduce_fn`. A combiner is therefore only correct if reducing combined pieces
+gives the same result as reducing the raw values:
+
+- For a sum, a maximum or a minimum, `combine_fn` can do the same as
+  `reduce_fn`.
+- A reducer that counts its values (`len(list(values))`) cannot be reused as
+  the combiner: it would count the pieces. Emit 1 from `map_fn` and sum, as
+  word count does.
+- For an average, the combiner must pass on a sum and a count, and only the
+  reducer divides.
+
+A job file can also say `combine_fn = None`, which is the same as leaving it
+out.
 
 ## 6. Submit the job
 

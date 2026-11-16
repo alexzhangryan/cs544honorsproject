@@ -59,7 +59,8 @@ def load_job(path: Path) -> types.ModuleType:
     for name in ("map_fn", "reduce_fn"):
         if not callable(getattr(module, name, None)):
             raise JobError(f"the job file does not define a function named {name}")
-    if hasattr(module, "combine_fn") and not callable(module.combine_fn):
+    combine_fn = getattr(module, "combine_fn", None)
+    if combine_fn is not None and not callable(combine_fn):
         raise JobError("combine_fn in the job file is not a function")
     return module
 

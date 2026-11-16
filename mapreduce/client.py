@@ -170,7 +170,8 @@ def cmd_submit(args, stub) -> int:
     if status.state == "SUCCEEDED":
         note = requeue_note(status)
         print(f"SUCCEEDED in {status.elapsed_seconds:.1f}s" + (f" ({note})" if note else ""))
-        print(f"intermediate data: {format_size(status.intermediate_bytes)}")
+        if status.intermediate_bytes:  # 0 if it could not be measured, or there was none
+            print(f"intermediate data: {format_size(status.intermediate_bytes)}")
         print(f"output: {Path(args.shared) / status.output_path}")
         return 0
     print(f"FAILED after {status.elapsed_seconds:.1f}s")

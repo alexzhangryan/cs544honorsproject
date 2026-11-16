@@ -372,3 +372,23 @@ def test_status_reports_size_of_intermediate_data(stub, shared_root):
     on_disk = sum(f.stat().st_size for f in intermediate_dir(shared_root, job_id).glob("map-*.jsonl"))
     assert on_disk > 0
     assert stub.GetJobStatus(pb.JobStatusRequest(job_id=job_id)).intermediate_bytes == on_disk
+
+
+def test_reduce_input_sizes_counts_only_finished_intermediate_files(shared_root):
+    from mapreduce.boss import reduce_input_sizes
+
+    directory = intermediate_dir(shared_root, "job-1")
+    directory.mkdir(parents=True)
+    files = {
+        "map-0-reduce-0.jsonl": 10,
+        "map-1-reduce-0.jsonl": 5,
+        "map-0-reduce-1.jsonl": 7,
+        "map-12-reduce-1.jsonl": 100,
+        "map-0-reduce-1.jsonl.tmp-w0-1": 1000,  # half-written by a killed worker
+        "reduce-0.out.tmp-w1-2": 1000,  # a reduce task's temporary output
+        "map-0-reduce-7.jsonl": 1000,  # no such reduce task in this job
+    }
+    for name, size in files.items():
+        (directory / name).write_bytes(b"x" * size)
+
+    assert reduce_input_sizes(shared_root)("job-1", 3) == [15, 107, 0]

@@ -127,6 +127,7 @@ python -m mapreduce.client submit \
 | `--job` | local Python file with `map_fn` and `reduce_fn` |
 | `--maps` | number of map tasks |
 | `--reduces` | number of reduce tasks |
+| `--reduce-order` | optional. Reduce tasks with the most input are handed out first, so that the one the job waits for longest starts early. `numerical` hands them out in order of task number instead |
 
 The client shows progress until the job finishes:
 

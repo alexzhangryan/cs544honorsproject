@@ -189,10 +189,20 @@ This is the oversized reduce task from section 1.
 
 ## 4. The additional features
 
-Each experiment switches on only the feature it is about. The combiner, in
-particular, removes nearly all of the intermediate data, which would leave
-the other two features nothing to work on. Sections 1 to 3 were measured
-before these features existed, so they describe the base system.
+Each experiment compares one feature switched on and off. The other two
+features are set as follows:
+
+- No combiner in 4.2 and 4.3. A combiner removes nearly all of the
+  intermediate data, which would leave the other two features nothing to
+  work on.
+- Backup tasks off in 4.1 and 4.2. In 4.3 they are on in the healthy case
+  as well, where none was ever started.
+- Largest-first reduce order, the client's default, in 4.1 and 4.3. That is
+  why the reduce phase without a combiner takes 5.9 s in 4.1, like
+  largest-first in 4.2, and not 7.3 s.
+
+Sections 1 to 3 were measured before these features existed, so they
+describe the base system.
 
 Each configuration was run 4 times, interleaved and in rotating order, with
 a 25-second pause before each run.
@@ -252,8 +262,11 @@ tasks on.
 | slow worker, no backup tasks | 26.1, 26.1, 26.9, 31.4 | 26.5 | 0 | 4 of 4 |
 | slow worker, backup tasks on | 20.9, 21.5, 21.7, 22.6 | 21.6 | 1 or 2 per run | 4 of 4 |
 
-The slow worker costs 9.5 s without backups. Backup tasks win back 5.0 s of
-that, a little over half.
+Two of the healthy runs (18.5 and 19.6 s) were slowed by the laptop: every
+task on every worker took 17 to 35% longer than in the other two. The same
+configuration took 14.9 to 15.1 s in all four runs of 4.2. Measured against
+the median of 17.0 s, the slow worker costs 9.5 s; against about 15.5 s, it
+costs about 11 s. Either way, backup tasks win back 5.0 s of it, about half.
 
 They cannot win back all of it, for two reasons that the timeline below
 shows. First, a backup is only started when a worker has nothing else to
@@ -267,9 +280,12 @@ In this run `worker-3` takes reduce task 2 at the start of the reduce phase
 (12.6 s). Six seconds later the other workers have run out of reduce tasks
 and reduce task 2 is clearly late, so `worker-4` gets a backup copy. The
 backup finishes at 21.5 s, the job is done, and `worker-3` is told to stop.
-`worker-3` also held up the map phase. That is not something backups can
-help with here, because the other workers still had map tasks to do while it
-was busy.
+In this run `worker-3` also held up the map phase, but no backup could
+help there: the other workers still had map tasks of their own while it was
+busy. In two of the four timed runs with backups (3 and 4) it was different.
+`worker-3` took a second map task late in the phase; another worker took a
+backup copy 3.3 to 3.4 s later, finished first, and `worker-3`'s copy was
+stopped. That is the second backup in the "1 or 2 per run" column.
 
 ## Limits of these measurements
 

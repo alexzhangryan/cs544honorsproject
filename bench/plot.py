@@ -417,8 +417,11 @@ def plot_backup_timeline(results: Path, out: Path) -> None:
     row = {worker: index for index, worker in enumerate(workers)}
     job_end = events[-1]["t"]
 
+    title = "A free worker takes a second copy of the slow worker's task"
+    if not meta.get("backups"):
+        title = "No backup copy was started in this run"
     fig, ax = new_figure(
-        "A free worker takes a second copy of the slow worker's task",
+        title,
         [f"One run of word count ({meta['maps']} map and {meta['reduces']} reduce tasks) with "
          f"{meta['slow_worker']} limited to {meta['cpus']:g} CPU.",
          "Each bar is one task on the worker that ran it."],

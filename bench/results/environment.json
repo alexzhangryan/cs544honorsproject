@@ -10,15 +10,21 @@
   "experiments": {
     "scaling": {
       "trials": 5,
-      "cooldown_seconds": 25.0
+      "cooldown_seconds": 25.0,
+      "heartbeat_timeout_seconds": 5.0,
+      "worker_cpu_limit": 1.0
     },
     "timeline": {
       "trials": 1,
-      "cooldown_seconds": 25.0
+      "cooldown_seconds": 25.0,
+      "heartbeat_timeout_seconds": 5.0,
+      "worker_cpu_limit": 1.0
     },
     "failure": {
       "trials": 4,
-      "cooldown_seconds": 45.0
+      "cooldown_seconds": 45.0,
+      "heartbeat_timeout_seconds": 5.0,
+      "worker_cpu_limit": 1.0
     },
     "combiner": {
       "trials": 4,

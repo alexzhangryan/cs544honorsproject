@@ -20,7 +20,10 @@ and one for each of the additional features:
 
 The first three experiments run with the additional features switched off
 (numerical reduce order, no backup tasks, no combiner), so they measure the
-base system. Each of the other three switches on only the feature it is about.
+base system. Each of the other three compares its own feature switched on and
+off. There is no combiner in reduce_order and backup, and no backup tasks in
+combiner and reduce_order; combiner and backup use largest-first reduce
+order, the client's default.
 
 Results are written to bench/results/. Draw the plots with bench/plot.py.
 
@@ -376,6 +379,8 @@ def backup_experiment(stub, trials: int) -> None:
             result = run_job(stub, "backup-timeline", reduce_order="largest_first", backup_tasks=True)
             if result["backups"]:
                 break
+        else:
+            print("  warning: no backup was started in 3 tries; the timeline will show none", flush=True)
         shutil.copyfile(RESULTS / "events" / "backup-timeline.jsonl", RESULTS / "backup_timeline_events.jsonl")
         meta = {
             "slow_worker": f"worker-{SLOW}",

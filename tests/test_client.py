@@ -3,7 +3,8 @@
 import time
 
 from helpers import TEXTS, WORDCOUNT, read_output, reference_wordcount, write_input
-from mapreduce.client import main
+from mapreduce import mapreduce_pb2 as pb
+from mapreduce.client import build_parser, main
 
 
 def client(cluster, shared_root, *args):
@@ -230,3 +231,63 @@ def test_more_tasks_than_the_system_allows(cluster, shared_root, capsys):
     assert client(cluster, shared_root, *args) == 1
 
     assert_one_line_error(capsys.readouterr(), "--reduces must be between 1 and 10000")
+
+def first_reduce_task_handed_out(cluster, job_id):
+    return next(
+        event["task"] for event in cluster.events(job_id)
+        if event["event"] == "assigned" and event["kind"] == "reduce"
+    )
+
+
+def lopsided_submit_args(output):
+    """A job whose largest reduce task is not task 0."""
+    return ["submit", "--input", "input/lopsided", "--output", output, "--job", str(WORDCOUNT),
+            "--maps", "2", "--reduces", "5"]
+
+
+def test_reduce_order_option_reaches_the_boss(cluster, shared_root, capsys):
+    from mapreduce.tasks import partition
+
+    write_input(shared_root, {"input/lopsided/one.txt": "common " * 500 + "\nrare other words here\n"})
+    largest = partition("common", 5)
+    assert largest != 0, "pick another word: this one lands in reduce task 0"
+    cluster.start_workers(2)
+
+    assert client(cluster, shared_root, *lopsided_submit_args("output/default")) == 0
+    default_job = capsys.readouterr().out.split()[1]
+    assert client(cluster, shared_root, *lopsided_submit_args("output/numerical"), "--reduce-order", "numerical") == 0
+    numerical_job = capsys.readouterr().out.split()[1]
+
+    assert first_reduce_task_handed_out(cluster, default_job) == largest
+    assert first_reduce_task_handed_out(cluster, numerical_job) == 0
+
+
+def test_submit_shows_the_size_of_the_intermediate_data(cluster, shared_root, capsys):
+    write_input(shared_root, TEXTS)
+    cluster.start_workers(2)
+
+    assert client(cluster, shared_root, *submit_args()) == 0
+
+    out = capsys.readouterr().out
+    job_id = out.split()[1]
+    measured = cluster.status(job_id).intermediate_bytes
+    assert measured > 0
+    assert f"intermediate data: {measured} bytes" in out  # small enough to be shown in bytes
+
+
+def test_submit_says_nothing_about_intermediate_data_that_was_not_measured(capsys):
+    from mapreduce.client import cmd_submit
+
+    class Stub:
+        def SubmitJob(self, request, timeout=None):
+            return type("Reply", (), {"job_id": "job-1"})()
+
+        def GetJobStatus(self, request, timeout=None):
+            return pb.JobStatusReply(job_id="job-1", state="SUCCEEDED", output_path="out")
+
+    args = build_parser().parse_args(["submit", "--input", "in", "--output", "out", "--job", str(WORDCOUNT),
+                                      "--maps", "1", "--reduces", "1"])
+
+    assert cmd_submit(args, Stub()) == 0
+
+    assert "intermediate data" not in capsys.readouterr().out

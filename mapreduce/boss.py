@@ -15,6 +15,7 @@ import ast
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import threading
@@ -91,6 +92,10 @@ class BossServicer(pb_grpc.BossServicer):
                 )
 
         check_job_source(request.job_source)
+        if request.reduce_order not in ("", "largest_first", "numerical"):
+            raise ValueError(
+                f"unknown reduce order {request.reduce_order!r}: use largest_first or numerical"
+            )
 
         job_id = time.strftime("job-%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         intermediate_dir(self._shared_root, job_id).mkdir(parents=True)
@@ -101,6 +106,7 @@ class BossServicer(pb_grpc.BossServicer):
             request.output_path,
             make_splits(files, request.num_map),
             request.num_reduce,
+            reduce_order=request.reduce_order or "largest_first",
         )
         return job_id
 
@@ -119,6 +125,7 @@ class BossServicer(pb_grpc.BossServicer):
             elapsed_seconds=status.elapsed,
             requeues=status.requeues,
             output_path=status.output_path,
+            intermediate_bytes=status.intermediate_bytes,
         )
 
     def ListWorkers(self, request, context):
@@ -274,6 +281,25 @@ def event_writer(shared_root: Path):
     return write
 
 
+INTERMEDIATE_FILE = re.compile(r"map-\d+-reduce-(\d+)\.jsonl")
+
+
+def reduce_input_sizes(shared_root: Path):
+    """Return a function that measures the input of each reduce task of a
+    job: the total size of the intermediate files written for it."""
+
+    def measure(job_id: str, num_reduce: int) -> list[int]:
+        sizes = [0] * num_reduce
+        with os.scandir(intermediate_dir(shared_root, job_id)) as entries:
+            for entry in entries:
+                match = INTERMEDIATE_FILE.fullmatch(entry.name)  # skips temporary files
+                if match and int(match.group(1)) < num_reduce:
+                    sizes[int(match.group(1))] += entry.stat().st_size
+        return sizes
+
+    return measure
+
+
 def watch_workers(scheduler: Scheduler, interval: float, stop: threading.Event) -> None:
     """Regularly check for workers that have stopped sending heartbeats."""
     while not stop.wait(interval):
@@ -313,7 +339,11 @@ def start_boss(
     presumed dead; monitor_interval is how often that is checked.
     """
     shared_root = Path(shared_root)
-    scheduler = Scheduler(heartbeat_timeout=heartbeat_timeout, on_event=event_writer(shared_root))
+    scheduler = Scheduler(
+        heartbeat_timeout=heartbeat_timeout,
+        on_event=event_writer(shared_root),
+        reduce_sizes=reduce_input_sizes(shared_root),
+    )
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
     pb_grpc.add_BossServicer_to_server(BossServicer(scheduler, shared_root), server)
     bound_port = server.add_insecure_port(f"{host}:{port}")

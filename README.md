@@ -127,6 +127,7 @@ python -m mapreduce.client submit \
 | `--job` | local Python file with `map_fn` and `reduce_fn` |
 | `--maps` | number of map tasks |
 | `--reduces` | number of reduce tasks |
+| `--reduce-order` | optional. Reduce tasks with the most input are handed out first, so that the one the job waits for longest starts early. `numerical` hands them out in order of task number instead |
 
 The client shows progress until the job finishes:
 
@@ -136,10 +137,12 @@ map 0/8  reduce 0/4  0.0s
 map 8/8  reduce 2/4  0.5s
 map 8/8  reduce 4/4  0.6s
 SUCCEEDED in 0.6s
+intermediate data: 1.1 MB
 output: shared/output/wordcount
 ```
 
-There is one output file per reduce task. To see the ten most common words:
+"Intermediate data" is the total size of what the map tasks wrote for the
+reduce tasks. There is one output file per reduce task. To see the ten most common words:
 
 ```bash
 cat shared/output/wordcount/part-*.txt | sort -t$'\t' -k2 -nr | head
